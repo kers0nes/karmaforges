@@ -1,4 +1,4 @@
-// server.js – KarmaForges v7.0 (sqlite3 version – no native compilation)
+// server.js – KarmaForges v7.0 (sqlite3 version – fully fixed)
 
 const express = require('express');
 const sqlite3 = require('sqlite3');
@@ -186,7 +186,7 @@ async function initDatabase() {
   return db;
 }
 
-// ============ HELPER FUNCTIONS (async) ============
+// ============ HELPER FUNCTIONS ============
 function makeId(prefix = 'script') { return `${prefix}_${crypto.randomBytes(6).toString('hex')}`; }
 
 function generateKey() {
@@ -435,7 +435,7 @@ const upload = multer({
   }
 });
 
-// ============ API ROUTES (async) ============
+// ============ API ROUTES ============
 
 app.get('/health', (req, res) => {
   res.json({ ok: true, name: 'KarmaForges v7.0', uptime: process.uptime() });
@@ -932,7 +932,7 @@ client.once('ready', () => {
   console.log(`🤖 Discord bot online as ${client.user.tag}`);
 });
 
-// ============ DISCORD COMMANDS (minimal) ============
+// ============ DISCORD COMMANDS ============
 
 client.on('messageCreate', async (msg) => {
   if (msg.author.bot || !msg.content.startsWith(PREFIX)) return;
@@ -952,7 +952,7 @@ client.on('messageCreate', async (msg) => {
           '**General**',
           `${PREFIX}setup – Create/load account`,
           `${PREFIX}scripts – List your scripts`,
-          `${PREFIX}keys – List your keys',
+          `${PREFIX}keys – List your keys`,
           '',
           '**Keys**',
           `${PREFIX}key <script_id> [hours] – Generate key`,
@@ -1112,10 +1112,8 @@ const port = Number(process.env.PORT || 3000);
 
 (async () => {
   try {
-    // Initialize database first
     await initDatabase();
 
-    // Clear Discord commands
     if (CLIENT_ID && GUILD_ID) {
       const { REST } = require('@discordjs/rest');
       const { Routes } = require('discord-api-types/v10');
@@ -1127,12 +1125,10 @@ const port = Number(process.env.PORT || 3000);
     console.error('Setup failed:', e);
   }
 
-  // Start Express server
   app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 KarmaForges v7.0 running on port ${port}`);
     console.log(`🌐 Website: ${publicBaseUrl()}`);
   });
 
-  // Login Discord bot
   await client.login(DISCORD_TOKEN);
 })();
