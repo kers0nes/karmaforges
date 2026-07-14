@@ -1,8 +1,8 @@
-// server.js – KarmaForges v7.0 Complete Edition
-// Full integration with your index.html dashboard
+// server.js – KarmaForges v7.0 (sqlite3 version – no native compilation)
 
 const express = require('express');
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -27,9 +27,9 @@ const {
   TextInputStyle,
 } = require('discord.js');
 
-// ============ ENVIRONMENT ============
 require('dotenv').config();
 
+// ============ ENVIRONMENT ============
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
@@ -43,7 +43,7 @@ const MAX_SCRIPTS = parseInt(process.env.MAX_SCRIPTS_PER_USER) || 20;
 const BRAND_COLOR = parseInt(process.env.BRAND_COLOR) || 0x6366f1;
 const PREFIX = process.env.PREFIX || '/';
 const BOT_PERMISSIONS = process.env.BOT_PERMISSIONS || '8';
-const COOLDOWN_HWID_RESET = 24 * 60 * 60 * 1000; // 24 hours
+const COOLDOWN_HWID_RESET = 24 * 60 * 60 * 1000;
 
 if (!DISCORD_TOKEN || !CLIENT_SECRET) {
   console.error('Missing DISCORD_TOKEN or CLIENT_SECRET.');
@@ -53,129 +53,140 @@ if (!DISCORD_TOKEN || !CLIENT_SECRET) {
 console.log('🐱 KarmaForges v7.0 starting...');
 console.log(`Database: ${DATABASE_PATH}`);
 console.log(`Base URL: ${PUBLIC_BASE_URL}`);
-console.log(`Max scripts per user: ${MAX_SCRIPTS}`);
 
-// ============ DATABASE ============
-const db = new Database(DATABASE_PATH);
-db.pragma('journal_mode = WAL');
+// ============ DATABASE (sqlite3 async) ============
+let db;
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  discord_id TEXT UNIQUE,
-  username TEXT UNIQUE,
-  email TEXT UNIQUE,
-  password_hash TEXT,
-  password_salt TEXT,
-  avatar TEXT,
-  credits INTEGER DEFAULT 0,
-  is_owner INTEGER DEFAULT 0,
-  referral_code TEXT UNIQUE,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+async function initDatabase() {
+  db = await open({
+    filename: DATABASE_PATH,
+    driver: sqlite3.Database
+  });
 
-CREATE TABLE IF NOT EXISTS scripts (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  filename TEXT,
-  code TEXT,
-  obfuscated_code TEXT,
-  version TEXT DEFAULT '1.0.0',
-  status TEXT DEFAULT 'active',
-  ffa_mode INTEGER DEFAULT 0,
-  compress_mode INTEGER DEFAULT 0,
-  obfuscation_layers TEXT DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id)
-);
+  await db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
 
-CREATE TABLE IF NOT EXISTS keys (
-  id TEXT PRIMARY KEY,
-  script_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  panel_id TEXT,
-  key TEXT UNIQUE NOT NULL,
-  hwid TEXT,
-  note TEXT,
-  expires_at TEXT,
-  resettable_at TEXT,
-  used_count INTEGER DEFAULT 0,
-  max_uses INTEGER DEFAULT 1,
-  claimed_by TEXT,
-  claimed_tag TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_used_at TEXT,
-  FOREIGN KEY(script_id) REFERENCES scripts(id),
-  FOREIGN KEY(user_id) REFERENCES users(id)
-);
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      discord_id TEXT UNIQUE,
+      username TEXT UNIQUE,
+      email TEXT UNIQUE,
+      password_hash TEXT,
+      password_salt TEXT,
+      avatar TEXT,
+      credits INTEGER DEFAULT 0,
+      is_owner INTEGER DEFAULT 0,
+      referral_code TEXT UNIQUE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
 
-CREATE TABLE IF NOT EXISTS banned_hwids (
-  hwid TEXT PRIMARY KEY,
-  reason TEXT,
-  banned_by TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+    CREATE TABLE IF NOT EXISTS scripts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      filename TEXT,
+      code TEXT,
+      obfuscated_code TEXT,
+      version TEXT DEFAULT '1.0.0',
+      status TEXT DEFAULT 'active',
+      ffa_mode INTEGER DEFAULT 0,
+      compress_mode INTEGER DEFAULT 0,
+      obfuscation_layers TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
 
-CREATE TABLE IF NOT EXISTS referrals (
-  id TEXT PRIMARY KEY,
-  referrer_id TEXT NOT NULL,
-  referred_id TEXT UNIQUE NOT NULL,
-  credits_awarded INTEGER DEFAULT 10,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(referrer_id) REFERENCES users(id),
-  FOREIGN KEY(referred_id) REFERENCES users(id)
-);
+    CREATE TABLE IF NOT EXISTS keys (
+      id TEXT PRIMARY KEY,
+      script_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      panel_id TEXT,
+      key TEXT UNIQUE NOT NULL,
+      hwid TEXT,
+      note TEXT,
+      expires_at TEXT,
+      resettable_at TEXT,
+      used_count INTEGER DEFAULT 0,
+      max_uses INTEGER DEFAULT 1,
+      claimed_by TEXT,
+      claimed_tag TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_used_at TEXT,
+      FOREIGN KEY(script_id) REFERENCES scripts(id),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
 
-CREATE TABLE IF NOT EXISTS panels (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  description TEXT,
-  channel_id TEXT NOT NULL,
-  script_id TEXT NOT NULL,
-  hwid_cooldown INTEGER DEFAULT 180,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id),
-  FOREIGN KEY(script_id) REFERENCES scripts(id)
-);
+    CREATE TABLE IF NOT EXISTS banned_hwids (
+      hwid TEXT PRIMARY KEY,
+      reason TEXT,
+      banned_by TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
 
-CREATE TABLE IF NOT EXISTS sessions (
-  sid TEXT PRIMARY KEY,
-  sess TEXT NOT NULL,
-  expire INTEGER NOT NULL
-);
+    CREATE TABLE IF NOT EXISTS referrals (
+      id TEXT PRIMARY KEY,
+      referrer_id TEXT NOT NULL,
+      referred_id TEXT UNIQUE NOT NULL,
+      credits_awarded INTEGER DEFAULT 10,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(referrer_id) REFERENCES users(id),
+      FOREIGN KEY(referred_id) REFERENCES users(id)
+    );
 
-CREATE TABLE IF NOT EXISTS obfuscation_logs (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  script_id TEXT NOT NULL,
-  layers TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id),
-  FOREIGN KEY(script_id) REFERENCES scripts(id)
-);
+    CREATE TABLE IF NOT EXISTS panels (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      channel_id TEXT NOT NULL,
+      script_id TEXT NOT NULL,
+      hwid_cooldown INTEGER DEFAULT 180,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(script_id) REFERENCES scripts(id)
+    );
 
-CREATE TABLE IF NOT EXISTS api_keys (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  key TEXT UNIQUE NOT NULL,
-  name TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_used_at TEXT,
-  FOREIGN KEY(user_id) REFERENCES users(id)
-);
+    CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      sess TEXT NOT NULL,
+      expire INTEGER NOT NULL
+    );
 
-CREATE INDEX IF NOT EXISTS idx_keys_key ON keys(key);
-CREATE INDEX IF NOT EXISTS idx_keys_script_id ON keys(script_id);
-CREATE INDEX IF NOT EXISTS idx_scripts_user_id ON scripts(user_id);
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-`);
+    CREATE TABLE IF NOT EXISTS obfuscation_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      script_id TEXT NOT NULL,
+      layers TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(script_id) REFERENCES scripts(id)
+    );
 
-// ============ HELPER FUNCTIONS ============
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      key TEXT UNIQUE NOT NULL,
+      name TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_used_at TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_keys_key ON keys(key);
+    CREATE INDEX IF NOT EXISTS idx_keys_script_id ON keys(script_id);
+    CREATE INDEX IF NOT EXISTS idx_scripts_user_id ON scripts(user_id);
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+  `);
+
+  console.log('✅ Database initialized');
+  return db;
+}
+
+// ============ HELPER FUNCTIONS (async) ============
 function makeId(prefix = 'script') { return `${prefix}_${crypto.randomBytes(6).toString('hex')}`; }
 
 function generateKey() {
@@ -346,11 +357,6 @@ fn()
 
     const final = this.selfModifyingLoader(vmBytecode);
 
-    const logId = makeId('log');
-    db.prepare(
-      'INSERT INTO obfuscation_logs (id, user_id, script_id, layers) VALUES (?, ?, ?, ?)'
-    ).run(logId, userId, '', JSON.stringify(layers));
-
     return {
       code: final,
       layers: layers,
@@ -429,7 +435,7 @@ const upload = multer({
   }
 });
 
-// ============ API ROUTES ============
+// ============ API ROUTES (async) ============
 
 app.get('/health', (req, res) => {
   res.json({ ok: true, name: 'KarmaForges v7.0', uptime: process.uptime() });
@@ -473,18 +479,22 @@ app.get('/api/auth/discord/callback', async (req, res) => {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
     const user = await userResponse.json();
-    let dbUser = db.prepare('SELECT * FROM users WHERE discord_id = ? AND deleted_at IS NULL').get(user.id);
+    
+    let dbUser = await db.get('SELECT * FROM users WHERE discord_id = ?', user.id);
     if (!dbUser) {
       const id = makeId('user');
       const referralCode = generateReferralCode();
-      db.prepare(
+      await db.run(
         `INSERT INTO users (id, discord_id, username, avatar, referral_code)
-         VALUES (?, ?, ?, ?, ?)`
-      ).run(id, user.id, user.username, user.avatar || '', referralCode);
-      dbUser = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(user.id);
+         VALUES (?, ?, ?, ?, ?)`,
+        id, user.id, user.username, user.avatar || '', referralCode
+      );
+      dbUser = await db.get('SELECT * FROM users WHERE discord_id = ?', user.id);
     } else {
-      db.prepare('UPDATE users SET username = ?, avatar = ?, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?')
-        .run(user.username, user.avatar || '', user.id);
+      await db.run(
+        'UPDATE users SET username = ?, avatar = ?, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?',
+        user.username, user.avatar || '', user.id
+      );
     }
 
     const avatarUrl = user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` : '';
@@ -501,31 +511,34 @@ app.get('/logout', (req, res) => {
   res.redirect('/');
 });
 
-// ============ SCRIPT MANAGEMENT ============
+// ============ DATA API ============
 
-app.get('/api/data', requireAuth, (req, res) => {
+app.get('/api/data', requireAuth, async (req, res) => {
   const user = req.session.user;
-  const scripts = db.prepare('SELECT * FROM scripts WHERE user_id = ? ORDER BY created_at DESC').all(user.id);
-  const panels = db.prepare('SELECT * FROM panels WHERE user_id = ? ORDER BY created_at DESC').all(user.id);
-  const keys = db.prepare(
+  const scripts = await db.all('SELECT * FROM scripts WHERE user_id = ? ORDER BY created_at DESC', user.id);
+  const panels = await db.all('SELECT * FROM panels WHERE user_id = ? ORDER BY created_at DESC', user.id);
+  const keys = await db.all(
     `SELECT k.*, u.username as claimed_tag 
      FROM keys k 
      LEFT JOIN users u ON k.claimed_by = u.id 
      WHERE k.user_id = ? 
-     ORDER BY k.created_at DESC`
-  ).all(user.id);
-  const banned = db.prepare('SELECT * FROM banned_hwids ORDER BY created_at DESC').all();
-  const apiKeys = db.prepare('SELECT id, key, name, created_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC').all(user.id);
+     ORDER BY k.created_at DESC`,
+    user.id
+  );
+  const banned = await db.all('SELECT * FROM banned_hwids ORDER BY created_at DESC');
+  const apiKeys = await db.all('SELECT id, key, name, created_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC', user.id);
   res.json({ scripts, panels, keys, bannedHWIDs: banned, apiKeys, serverTime: Date.now() });
 });
 
-app.post('/api/create-script', requireAuth, (req, res) => {
+// ============ SCRIPT MANAGEMENT ============
+
+app.post('/api/create-script', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { name, code, compressMode, type } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Missing name or code' });
 
-  const count = db.prepare('SELECT COUNT(*) as total FROM scripts WHERE user_id = ?').get(user.id).total;
-  if (count >= MAX_SCRIPTS) {
+  const count = await db.get('SELECT COUNT(*) as total FROM scripts WHERE user_id = ?', user.id);
+  if (count.total >= MAX_SCRIPTS) {
     return res.status(400).json({ error: `Maximum ${MAX_SCRIPTS} scripts reached` });
   }
 
@@ -533,115 +546,118 @@ app.post('/api/create-script', requireAuth, (req, res) => {
   const obfResult = KarmaObfuscator.obfuscate(code, user.id);
   const obfuscatedCode = obfResult.code;
 
-  db.prepare(
+  await db.run(
     `INSERT INTO scripts (id, user_id, name, code, obfuscated_code, version, status, compress_mode, obfuscation_layers)
-     VALUES (?, ?, ?, ?, ?, '1.0.0', 'active', ?, ?)`
-  ).run(id, user.id, name, code, obfuscatedCode, compressMode ? 1 : 0, JSON.stringify(obfResult.layers));
+     VALUES (?, ?, ?, ?, ?, '1.0.0', 'active', ?, ?)`,
+    id, user.id, name, code, obfuscatedCode, compressMode ? 1 : 0, JSON.stringify(obfResult.layers)
+  );
 
   res.json({ success: true, id });
 });
 
-app.post('/api/update-script', requireAuth, (req, res) => {
+app.post('/api/update-script', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { id, name, code, compressMode } = req.body;
   if (!id || !name || !code) return res.status(400).json({ error: 'Missing fields' });
 
-  const existing = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(id, user.id);
+  const existing = await db.get('SELECT * FROM scripts WHERE id = ? AND user_id = ?', id, user.id);
   if (!existing) return res.status(404).json({ error: 'Script not found' });
 
   const obfResult = KarmaObfuscator.obfuscate(code, user.id);
   const obfuscatedCode = obfResult.code;
 
-  db.prepare(
+  await db.run(
     `UPDATE scripts 
      SET name = ?, code = ?, obfuscated_code = ?, compress_mode = ?, obfuscation_layers = ?, updated_at = CURRENT_TIMESTAMP 
-     WHERE id = ? AND user_id = ?`
-  ).run(name, code, obfuscatedCode, compressMode ? 1 : 0, JSON.stringify(obfResult.layers), id, user.id);
+     WHERE id = ? AND user_id = ?`,
+    name, code, obfuscatedCode, compressMode ? 1 : 0, JSON.stringify(obfResult.layers), id, user.id
+  );
 
   res.json({ success: true });
 });
 
-app.get('/api/script/:id', requireAuth, (req, res) => {
+app.get('/api/script/:id', requireAuth, async (req, res) => {
   const user = req.session.user;
-  const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(req.params.id, user.id);
+  const script = await db.get('SELECT * FROM scripts WHERE id = ? AND user_id = ?', req.params.id, user.id);
   if (!script) return res.status(404).json({ error: 'Script not found' });
   res.json({ script });
 });
 
-app.put('/api/scripts/:id/toggle', requireAuth, (req, res) => {
+app.put('/api/scripts/:id/toggle', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { id } = req.params;
-  const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(id, user.id);
+  const script = await db.get('SELECT * FROM scripts WHERE id = ? AND user_id = ?', id, user.id);
   if (!script) return res.status(404).json({ error: 'Script not found' });
   const newStatus = script.status === 'active' ? 'disabled' : 'active';
-  db.prepare('UPDATE scripts SET status = ? WHERE id = ? AND user_id = ?').run(newStatus, id, user.id);
+  await db.run('UPDATE scripts SET status = ? WHERE id = ? AND user_id = ?', newStatus, id, user.id);
   res.json({ success: true, status: newStatus });
 });
 
-app.put('/api/scripts/:id/ffa', requireAuth, (req, res) => {
+app.put('/api/scripts/:id/ffa', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { id } = req.params;
-  const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(id, user.id);
+  const script = await db.get('SELECT * FROM scripts WHERE id = ? AND user_id = ?', id, user.id);
   if (!script) return res.status(404).json({ error: 'Script not found' });
   const newFfa = script.ffa_mode ? 0 : 1;
-  db.prepare('UPDATE scripts SET ffa_mode = ? WHERE id = ? AND user_id = ?').run(newFfa, id, user.id);
+  await db.run('UPDATE scripts SET ffa_mode = ? WHERE id = ? AND user_id = ?', newFfa, id, user.id);
   res.json({ success: true, ffa_mode: newFfa });
 });
 
-app.post('/api/delete-script', requireAuth, (req, res) => {
+app.post('/api/delete-script', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { id } = req.body;
-  db.prepare('DELETE FROM scripts WHERE id = ? AND user_id = ?').run(id, user.id);
+  await db.run('DELETE FROM scripts WHERE id = ? AND user_id = ?', id, user.id);
   res.json({ success: true });
 });
 
 // ============ PANEL MANAGEMENT ============
 
-app.post('/api/create-panel', requireAuth, (req, res) => {
+app.post('/api/create-panel', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { name, description, channelId, scriptId, hwidCooldown } = req.body;
   if (!name || !channelId || !scriptId) return res.status(400).json({ error: 'Missing fields' });
 
   const id = makeId('panel');
-  db.prepare(
+  await db.run(
     `INSERT INTO panels (id, user_id, name, description, channel_id, script_id, hwid_cooldown)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, user.id, name, description || '', channelId, scriptId, hwidCooldown || 180);
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    id, user.id, name, description || '', channelId, scriptId, hwidCooldown || 180
+  );
 
   res.json({ success: true, id });
 });
 
-app.post('/api/update-panel', requireAuth, (req, res) => {
+app.post('/api/update-panel', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { id, name, description, channelId, scriptId, hwidCooldown } = req.body;
   if (!id || !name || !channelId || !scriptId) return res.status(400).json({ error: 'Missing fields' });
 
-  const existing = db.prepare('SELECT * FROM panels WHERE id = ? AND user_id = ?').get(id, user.id);
+  const existing = await db.get('SELECT * FROM panels WHERE id = ? AND user_id = ?', id, user.id);
   if (!existing) return res.status(404).json({ error: 'Panel not found' });
 
-  db.prepare(
+  await db.run(
     `UPDATE panels 
      SET name = ?, description = ?, channel_id = ?, script_id = ?, hwid_cooldown = ?, updated_at = CURRENT_TIMESTAMP 
-     WHERE id = ? AND user_id = ?`
-  ).run(name, description || '', channelId, scriptId, hwidCooldown || 180, id, user.id);
+     WHERE id = ? AND user_id = ?`,
+    name, description || '', channelId, scriptId, hwidCooldown || 180, id, user.id
+  );
 
   res.json({ success: true });
 });
 
-app.post('/api/delete-panel', requireAuth, (req, res) => {
+app.post('/api/delete-panel', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { id } = req.body;
-  db.prepare('DELETE FROM panels WHERE id = ? AND user_id = ?').run(id, user.id);
+  await db.run('DELETE FROM panels WHERE id = ? AND user_id = ?', id, user.id);
   res.json({ success: true });
 });
 
-app.post('/api/send-panel', requireAuth, (req, res) => {
+app.post('/api/send-panel', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { panelId } = req.body;
-  const panel = db.prepare('SELECT * FROM panels WHERE id = ? AND user_id = ?').get(panelId, user.id);
+  const panel = await db.get('SELECT * FROM panels WHERE id = ? AND user_id = ?', panelId, user.id);
   if (!panel) return res.status(404).json({ error: 'Panel not found' });
 
-  // Send panel to Discord via bot
   if (client.isReady()) {
     const channel = client.channels.cache.get(panel.channel_id);
     if (channel) {
@@ -649,9 +665,7 @@ app.post('/api/send-panel', requireAuth, (req, res) => {
         .setColor(BRAND_COLOR)
         .setTitle(panel.name)
         .setDescription(panel.description || 'Use the buttons below to manage your script.')
-        .addFields(
-          { name: 'Script ID', value: panel.script_id, inline: true }
-        )
+        .addFields({ name: 'Script ID', value: panel.script_id, inline: true })
         .setFooter({ text: 'KarmaForges v7.0' })
         .setTimestamp();
 
@@ -667,7 +681,7 @@ app.post('/api/send-panel', requireAuth, (req, res) => {
         new ButtonBuilder().setCustomId(`ph_${panel.script_id}`).setLabel('Reset HWID').setStyle(ButtonStyle.Danger)
       );
 
-      channel.send({ embeds: [embed], components: [row1, row2, row3] });
+      await channel.send({ embeds: [embed], components: [row1, row2, row3] });
       res.json({ success: true, message: 'Panel sent to Discord' });
     } else {
       res.status(400).json({ error: 'Channel not found. Check channel ID and bot permissions.' });
@@ -679,55 +693,56 @@ app.post('/api/send-panel', requireAuth, (req, res) => {
 
 // ============ KEY MANAGEMENT ============
 
-app.post('/api/generate-key', requireAuth, (req, res) => {
+app.post('/api/generate-key', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { durationHours, panelId, note } = req.body;
 
   if (!panelId) return res.status(400).json({ error: 'Panel ID required' });
 
-  const panel = db.prepare('SELECT * FROM panels WHERE id = ? AND user_id = ?').get(panelId, user.id);
+  const panel = await db.get('SELECT * FROM panels WHERE id = ? AND user_id = ?', panelId, user.id);
   if (!panel) return res.status(404).json({ error: 'Panel not found' });
 
   const key = generateKey();
   const expiresAt = durationHours > 0 ? addHours(durationHours) : null;
   const id = makeId('key');
 
-  db.prepare(
+  await db.run(
     `INSERT INTO keys (id, script_id, panel_id, user_id, key, note, expires_at, max_uses)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
-  ).run(id, panel.script_id, panelId, user.id, key, note || '', expiresAt);
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+    id, panel.script_id, panelId, user.id, key, note || '', expiresAt
+  );
 
   res.json({ success: true, key });
 });
 
-app.post('/api/delete-key', requireAuth, (req, res) => {
+app.post('/api/delete-key', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { key } = req.body;
-  db.prepare('DELETE FROM keys WHERE key = ? AND user_id = ?').run(key, user.id);
+  await db.run('DELETE FROM keys WHERE key = ? AND user_id = ?', key, user.id);
   res.json({ success: true });
 });
 
-app.post('/api/add-time-all', requireAuth, (req, res) => {
+app.post('/api/add-time-all', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { hours } = req.body;
   if (!hours || isNaN(hours)) return res.status(400).json({ error: 'Invalid hours' });
 
-  const keys = db.prepare('SELECT * FROM keys WHERE user_id = ? AND expires_at IS NOT NULL').all(user.id);
+  const keys = await db.all('SELECT * FROM keys WHERE user_id = ? AND expires_at IS NOT NULL', user.id);
   for (const k of keys) {
     const currentExpiry = new Date(k.expires_at);
     currentExpiry.setHours(currentExpiry.getHours() + parseInt(hours));
-    db.prepare('UPDATE keys SET expires_at = ? WHERE key = ?').run(currentExpiry.toISOString(), k.key);
+    await db.run('UPDATE keys SET expires_at = ? WHERE key = ?', currentExpiry.toISOString(), k.key);
   }
   res.json({ success: true });
 });
 
-app.post('/api/reset-hwid', requireAuth, (req, res) => {
+app.post('/api/reset-hwid', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { key } = req.body;
 
   if (!key) return res.status(400).json({ error: 'Key required' });
 
-  const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND user_id = ?').get(key, user.id);
+  const keyRecord = await db.get('SELECT * FROM keys WHERE key = ? AND user_id = ?', key, user.id);
   if (!keyRecord) return res.status(404).json({ error: 'Key not found' });
 
   if (keyRecord.resettable_at) {
@@ -744,37 +759,37 @@ app.post('/api/reset-hwid', requireAuth, (req, res) => {
     }
   }
 
-  db.prepare('UPDATE keys SET hwid = NULL, resettable_at = CURRENT_TIMESTAMP WHERE key = ?').run(key);
+  await db.run('UPDATE keys SET hwid = NULL, resettable_at = CURRENT_TIMESTAMP WHERE key = ?', key);
   res.json({ success: true, message: 'HWID reset successfully' });
 });
 
 // ============ HWID BAN MANAGEMENT ============
 
-app.post('/api/ban-hwid', requireAuth, (req, res) => {
+app.post('/api/ban-hwid', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { hwid } = req.body;
   if (!hwid) return res.status(400).json({ error: 'HWID required' });
 
-  db.prepare('INSERT OR REPLACE INTO banned_hwids (hwid, banned_by) VALUES (?, ?)').run(hwid, user.id);
+  await db.run('INSERT OR REPLACE INTO banned_hwids (hwid, banned_by) VALUES (?, ?)', hwid, user.id);
   res.json({ success: true });
 });
 
-app.post('/api/unban-hwid', requireAuth, (req, res) => {
+app.post('/api/unban-hwid', requireAuth, async (req, res) => {
   const user = req.session.user;
   const { hwid } = req.body;
   if (!hwid) return res.status(400).json({ error: 'HWID required' });
 
-  db.prepare('DELETE FROM banned_hwids WHERE hwid = ?').run(hwid);
+  await db.run('DELETE FROM banned_hwids WHERE hwid = ?', hwid);
   res.json({ success: true });
 });
 
 // ============ LOADER ROUTES ============
 
-app.get('/loader/:scriptId', (req, res) => {
+app.get('/loader/:scriptId', async (req, res) => {
   const { scriptId } = req.params;
   const { key, hwid } = req.query;
 
-  const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND status = "active"').get(scriptId);
+  const script = await db.get('SELECT * FROM scripts WHERE id = ? AND status = "active"', scriptId);
   if (!script) {
     return res.status(404).type('text/plain').send('-- Script not found');
   }
@@ -788,7 +803,7 @@ app.get('/loader/:scriptId', (req, res) => {
     return res.status(403).type('text/plain').send('-- Missing key');
   }
 
-  const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ?').get(key, scriptId);
+  const keyRecord = await db.get('SELECT * FROM keys WHERE key = ? AND script_id = ?', key, scriptId);
   if (!keyRecord) {
     return res.status(403).type('text/plain').send('-- Invalid key');
   }
@@ -802,7 +817,7 @@ app.get('/loader/:scriptId', (req, res) => {
   }
 
   if (hwid) {
-    const banned = db.prepare('SELECT * FROM banned_hwids WHERE hwid = ?').get(hwid);
+    const banned = await db.get('SELECT * FROM banned_hwids WHERE hwid = ?', hwid);
     if (banned) {
       return res.status(403).type('text/plain').send('-- HWID banned');
     }
@@ -810,13 +825,13 @@ app.get('/loader/:scriptId', (req, res) => {
 
   if (hwid) {
     if (!keyRecord.hwid) {
-      db.prepare('UPDATE keys SET hwid = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?').run(hwid, key);
+      await db.run('UPDATE keys SET hwid = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?', hwid, key);
     } else if (keyRecord.hwid !== hwid) {
       return res.status(403).type('text/plain').send('-- HWID mismatch. Use /reset-hwid');
     }
   }
 
-  db.prepare('UPDATE keys SET used_count = used_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE key = ?').run(key);
+  await db.run('UPDATE keys SET used_count = used_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE key = ?', key);
 
   const loader = `--[[ KarmaForges Loader v7.0 ]]
 return (function()
@@ -835,11 +850,11 @@ end)()
   res.type('text/plain').send(loader);
 });
 
-app.get('/api/script/:scriptId', (req, res) => {
+app.get('/api/script/:scriptId', async (req, res) => {
   const { scriptId } = req.params;
   const { key, hwid } = req.query;
 
-  const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND status = "active"').get(scriptId);
+  const script = await db.get('SELECT * FROM scripts WHERE id = ? AND status = "active"', scriptId);
   if (!script) {
     return res.status(404).type('text/plain').send('-- Script not found');
   }
@@ -853,7 +868,7 @@ app.get('/api/script/:scriptId', (req, res) => {
     return res.status(403).type('text/plain').send('-- Missing key');
   }
 
-  const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ?').get(key, scriptId);
+  const keyRecord = await db.get('SELECT * FROM keys WHERE key = ? AND script_id = ?', key, scriptId);
   if (!keyRecord) {
     return res.status(403).type('text/plain').send('-- Invalid key');
   }
@@ -867,7 +882,7 @@ app.get('/api/script/:scriptId', (req, res) => {
   }
 
   if (hwid) {
-    const banned = db.prepare('SELECT * FROM banned_hwids WHERE hwid = ?').get(hwid);
+    const banned = await db.get('SELECT * FROM banned_hwids WHERE hwid = ?', hwid);
     if (banned) {
       return res.status(403).type('text/plain').send('-- HWID banned');
     }
@@ -878,10 +893,10 @@ app.get('/api/script/:scriptId', (req, res) => {
   }
 
   if (hwid && !keyRecord.hwid) {
-    db.prepare('UPDATE keys SET hwid = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?').run(hwid, key);
+    await db.run('UPDATE keys SET hwid = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?', hwid, key);
   }
 
-  db.prepare('UPDATE keys SET used_count = used_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE key = ?').run(key);
+  await db.run('UPDATE keys SET used_count = used_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE key = ?', key);
 
   res.setHeader('Cache-Control', 'no-store');
   res.type('text/plain').send(script.obfuscated_code || script.code || '-- Empty');
@@ -889,12 +904,10 @@ app.get('/api/script/:scriptId', (req, res) => {
 
 // ============ FRONTEND ROUTES ============
 
-// Serve the index.html with user data from session
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public/index.html'));
 });
 
-// Dashboard route - serves the same index.html but client-side handles the hash
 app.get('/dashboard', (req, res) => {
   res.sendFile(path.join(__dirname, 'public/index.html'));
 });
@@ -919,7 +932,7 @@ client.once('ready', () => {
   console.log(`🤖 Discord bot online as ${client.user.tag}`);
 });
 
-// ============ DISCORD COMMANDS ============
+// ============ DISCORD COMMANDS (minimal) ============
 
 client.on('messageCreate', async (msg) => {
   if (msg.author.bot || !msg.content.startsWith(PREFIX)) return;
@@ -929,7 +942,7 @@ client.on('messageCreate', async (msg) => {
   const args = parts;
 
   try {
-    const user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(msg.author.id);
+    const user = await db.get('SELECT * FROM users WHERE discord_id = ?', msg.author.id);
 
     if (cmd === 'help') {
       const embed = new EmbedBuilder()
@@ -939,28 +952,15 @@ client.on('messageCreate', async (msg) => {
           '**General**',
           `${PREFIX}setup – Create/load account`,
           `${PREFIX}scripts – List your scripts`,
-          `${PREFIX}keys – List your keys`,
-          `${PREFIX}credits – Check your credits',
-          '',
-          '**Scripts**',
-          `${PREFIX}upload <name> [file] – Upload a script`,
-          `${PREFIX}script <id> – View script details`,
-          `${PREFIX}toggle <id> – Enable/disable script`,
+          `${PREFIX}keys – List your keys',
           '',
           '**Keys**',
-          `${PREFIX}key <script_id> [hours] [max_uses] – Generate key`,
+          `${PREFIX}key <script_id> [hours] – Generate key`,
           `${PREFIX}reset-hwid <key> – Reset HWID (24h cooldown)`,
-          `${PREFIX}revoke <key> – Revoke a key`,
-          '',
-          '**Whitelist**',
-          `${PREFIX}whitelist <script_id> <@user> [hours] – Whitelist user`,
-          `${PREFIX}unwhitelist <@user> – Remove from whitelist`,
-          `${PREFIX}wllist – List whitelisted users`,
           '',
           '**Admin**',
           `${PREFIX}ban <hwid> – Ban HWID`,
-          `${PREFIX}unban <hwid> – Unban HWID`,
-          `${PREFIX}stats – Server statistics`
+          `${PREFIX}unban <hwid> – Unban HWID`
         ].join('\n'))
         .setFooter({ text: 'KarmaForges v7.0' })
         .setTimestamp();
@@ -979,23 +979,24 @@ client.on('messageCreate', async (msg) => {
       if (!dbUser) {
         const id = makeId('user');
         const referralCode = generateReferralCode();
-        db.prepare(
+        await db.run(
           `INSERT INTO users (id, discord_id, username, avatar, referral_code)
-           VALUES (?, ?, ?, ?, ?)`
-        ).run(id, msg.author.id, msg.author.username, msg.author.displayAvatarURL() || '', referralCode);
-        dbUser = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(msg.author.id);
+           VALUES (?, ?, ?, ?, ?)`,
+          id, msg.author.id, msg.author.username, msg.author.displayAvatarURL() || '', referralCode
+        );
+        dbUser = await db.get('SELECT * FROM users WHERE discord_id = ?', msg.author.id);
       }
 
-      const sc = db.prepare('SELECT COUNT(*) as count FROM scripts WHERE user_id = ?').get(dbUser.id).count;
-      const kc = db.prepare('SELECT COUNT(*) as count FROM keys WHERE user_id = ?').get(dbUser.id).count;
+      const sc = await db.get('SELECT COUNT(*) as count FROM scripts WHERE user_id = ?', dbUser.id);
+      const kc = await db.get('SELECT COUNT(*) as count FROM keys WHERE user_id = ?', dbUser.id);
 
       const embed = new EmbedBuilder()
         .setColor(BRAND_COLOR)
         .setTitle('✅ Account Ready')
         .setDescription(`Welcome ${msg.author.username}!`)
         .addFields(
-          { name: 'Scripts', value: String(sc), inline: true },
-          { name: 'Keys', value: String(kc), inline: true },
+          { name: 'Scripts', value: String(sc.count), inline: true },
+          { name: 'Keys', value: String(kc.count), inline: true },
           { name: 'Credits', value: String(dbUser.credits || 0), inline: true }
         )
         .setFooter({ text: 'KarmaForges' })
@@ -1005,159 +1006,67 @@ client.on('messageCreate', async (msg) => {
       return;
     }
 
-    // Add more commands as needed...
-  } catch (error) {
-    console.error('Command error:', error);
-    await msg.reply('❌ Something went wrong');
-  }
-});
+    if (cmd === 'scripts' || cmd === 'list') {
+      if (!user) return msg.reply('Use /setup first');
 
-// ============ INTERACTION HANDLERS ============
+      const scripts = await db.all('SELECT * FROM scripts WHERE user_id = ? ORDER BY created_at DESC', user.id);
+      if (!scripts.length) return msg.reply('📂 No scripts found.');
 
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton() && !interaction.isModalSubmit()) return;
+      const embed = new EmbedBuilder()
+        .setColor(BRAND_COLOR)
+        .setTitle(`📜 Your Scripts (${scripts.length})`)
+        .setDescription(scripts.slice(0, 10).map((s, i) =>
+          `${i + 1}. **${s.name}** \`${s.id}\` - ${s.status === 'active' ? '🟢 Active' : '🔴 Disabled'}`
+        ).join('\n'))
+        .setTimestamp();
 
-  try {
-    const user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
-    if (!user) {
-      return interaction.reply({ content: 'Use /setup first', ephemeral: true });
+      await msg.reply({ embeds: [embed] });
+      return;
     }
 
-    const customId = interaction.customId;
-    const action = customId[0];
-    const scriptId = customId.substring(3);
+    if (cmd === 'key' || cmd === 'genkey') {
+      if (!user) return msg.reply('Use /setup first');
 
-    const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(scriptId, user.id);
-    if (!script) {
-      return interaction.reply({ content: '❌ Script not found', ephemeral: true });
+      const scriptId = args[0];
+      const hours = parseInt(args[1]) || 0;
+
+      if (!scriptId) return msg.reply(`Usage: ${PREFIX}key <script_id> [hours]`);
+
+      const script = await db.get('SELECT * FROM scripts WHERE id = ? AND user_id = ?', scriptId, user.id);
+      if (!script) return msg.reply('❌ Script not found');
+
+      const key = generateKey();
+      const expiresAt = hours > 0 ? addHours(hours) : null;
+      const id = makeId('key');
+
+      await db.run(
+        `INSERT INTO keys (id, script_id, user_id, key, expires_at, max_uses)
+         VALUES (?, ?, ?, ?, ?, 1)`,
+        id, scriptId, user.id, key, expiresAt
+      );
+
+      const embed = new EmbedBuilder()
+        .setColor(BRAND_COLOR)
+        .setTitle('🔑 Key Generated')
+        .setDescription(`**Script:** ${script.name}`)
+        .addFields(
+          { name: 'Key', value: `\`${key}\``, inline: false },
+          { name: 'Expires', value: expiresAt ? formatExpiry(expiresAt) : 'Permanent', inline: true }
+        )
+        .setTimestamp();
+
+      await msg.reply({ embeds: [embed] });
+      return;
     }
 
-    if (interaction.isButton()) {
-      if (action === 'v') {
-        const keyCount = db.prepare('SELECT COUNT(*) as count FROM keys WHERE script_id = ?').get(scriptId).count;
-        const embed = new EmbedBuilder()
-          .setColor(BRAND_COLOR)
-          .setTitle(script.name)
-          .addFields(
-            { name: 'Version', value: script.version || '1.0.0', inline: true },
-            { name: 'Status', value: script.status === 'active' ? '🟢 Active' : '🔴 Disabled', inline: true },
-            { name: 'Keys', value: String(keyCount), inline: true },
-            { name: 'FFA Mode', value: script.ffa_mode ? '✅' : '❌', inline: true }
-          )
-          .setTimestamp();
+    if (cmd === 'reset-hwid') {
+      if (!user) return msg.reply('Use /setup first');
 
-        await interaction.reply({ embeds: [embed], ephemeral: true });
-      } else if (action === 'r') {
-        const modal = new ModalBuilder()
-          .setCustomId(`rm_${scriptId}`)
-          .setTitle('Redeem Key');
+      const key = args[0];
+      if (!key) return msg.reply(`Usage: ${PREFIX}reset-hwid <key>`);
 
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('key_input')
-              .setLabel('Enter your license key')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-          )
-        );
-
-        await interaction.showModal(modal);
-      } else if (action === 'i') {
-        const keys = db.prepare(
-          'SELECT * FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC'
-        ).all(scriptId, user.id);
-
-        if (!keys.length) {
-          return interaction.reply({ content: 'No keys found.', ephemeral: true });
-        }
-
-        const lines = keys.map(k => {
-          const expired = k.expires_at && new Date(k.expires_at).getTime() < Date.now();
-          return `${expired ? 'Expired' : 'Active'} ${maskKey(k.key)} - ${k.hwid ? 'HWID-Locked' : 'Open'}`;
-        });
-
-        const embed = new EmbedBuilder()
-          .setColor(BRAND_COLOR)
-          .setTitle('Keys')
-          .setDescription(lines.join('\n'))
-          .setTimestamp();
-
-        await interaction.reply({ embeds: [embed], ephemeral: true });
-      } else if (action === 'l') {
-        const key = db.prepare(
-          'SELECT key FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1'
-        ).get(scriptId, user.id);
-
-        if (!key) {
-          return interaction.reply({ content: 'No active key found.', ephemeral: true });
-        }
-
-        const loader = `loadstring(game:HttpGet("${publicBaseUrl()}/loader/${scriptId}?key=${key.key}"))()`;
-        await interaction.reply({
-          content: `📋 Loader:\n\`\`\`lua\n${loader}\n\`\`\``,
-          ephemeral: true
-        });
-      } else if (action === 'h') {
-        const modal = new ModalBuilder()
-          .setCustomId(`hm_${scriptId}`)
-          .setTitle('Reset HWID');
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('key_input')
-              .setLabel('Enter your license key')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-          )
-        );
-
-        await interaction.showModal(modal);
-      }
-    }
-
-    if (interaction.isModalSubmit() && customId.startsWith('rm_')) {
-      const scriptId = customId.substring(3);
-      const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase();
-
-      const keyRecord = db.prepare(
-        'SELECT * FROM keys WHERE key = ? AND script_id = ? AND user_id = ?'
-      ).get(keyVal, scriptId, user.id);
-
-      if (!keyRecord) {
-        return interaction.reply({ content: '❌ Invalid key', ephemeral: true });
-      }
-
-      if (keyRecord.expires_at && new Date(keyRecord.expires_at).getTime() < Date.now()) {
-        return interaction.reply({ content: '❌ Key expired', ephemeral: true });
-      }
-
-      if (keyRecord.claimed_by) {
-        return interaction.reply({ content: '❌ Key already claimed', ephemeral: true });
-      }
-
-      db.prepare(
-        'UPDATE keys SET claimed_by = ?, claimed_tag = ?, used_count = used_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE key = ?'
-      ).run(user.id, interaction.user.tag, keyVal);
-
-      await interaction.reply({
-        content: '✅ Key redeemed successfully! The loader is now active.',
-        ephemeral: true
-      });
-    }
-
-    if (interaction.isModalSubmit() && customId.startsWith('hm_')) {
-      const scriptId = customId.substring(3);
-      const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase();
-
-      const keyRecord = db.prepare(
-        'SELECT * FROM keys WHERE key = ? AND script_id = ? AND user_id = ?'
-      ).get(keyVal, scriptId, user.id);
-
-      if (!keyRecord) {
-        return interaction.reply({ content: '❌ Invalid key', ephemeral: true });
-      }
+      const keyRecord = await db.get('SELECT * FROM keys WHERE key = ? AND user_id = ?', key, user.id);
+      if (!keyRecord) return msg.reply('❌ Key not found');
 
       if (keyRecord.resettable_at) {
         const lastReset = new Date(keyRecord.resettable_at).getTime();
@@ -1166,25 +1075,34 @@ client.on('interactionCreate', async (interaction) => {
           const remaining = COOLDOWN_HWID_RESET - elapsed;
           const hours = Math.floor(remaining / 3600000);
           const minutes = Math.floor((remaining % 3600000) / 60000);
-          return interaction.reply({
-            content: `⏳ Cooldown: ${hours}h ${minutes}m remaining`,
-            ephemeral: true
-          });
+          return msg.reply(`⏳ Cooldown: ${hours}h ${minutes}m remaining`);
         }
       }
 
-      db.prepare('UPDATE keys SET hwid = NULL, resettable_at = CURRENT_TIMESTAMP WHERE key = ?').run(keyVal);
-      await interaction.reply({
-        content: '✅ HWID reset successfully!',
-        ephemeral: true
-      });
+      await db.run('UPDATE keys SET hwid = NULL, resettable_at = CURRENT_TIMESTAMP WHERE key = ?', key);
+      await msg.reply(`✅ HWID reset for \`${key}\``);
+      return;
+    }
+
+    // Admin commands
+    if (cmd === 'ban' && isOwner(user)) {
+      const hwid = args[0];
+      if (!hwid) return msg.reply(`Usage: ${PREFIX}ban <hwid>`);
+      await db.run('INSERT OR REPLACE INTO banned_hwids (hwid, banned_by) VALUES (?, ?)', hwid, msg.author.id);
+      await msg.reply(`✅ HWID \`${hwid}\` banned`);
+      return;
+    }
+
+    if (cmd === 'unban' && isOwner(user)) {
+      const hwid = args[0];
+      if (!hwid) return msg.reply(`Usage: ${PREFIX}unban <hwid>`);
+      await db.run('DELETE FROM banned_hwids WHERE hwid = ?', hwid);
+      await msg.reply(`✅ HWID \`${hwid}\` unbanned`);
+      return;
     }
   } catch (error) {
-    console.error('Interaction error:', error);
-    await interaction.reply({
-      content: '❌ Something went wrong',
-      ephemeral: true
-    });
+    console.error('Command error:', error);
+    await msg.reply('❌ Something went wrong');
   }
 });
 
@@ -1194,6 +1112,10 @@ const port = Number(process.env.PORT || 3000);
 
 (async () => {
   try {
+    // Initialize database first
+    await initDatabase();
+
+    // Clear Discord commands
     if (CLIENT_ID && GUILD_ID) {
       const { REST } = require('@discordjs/rest');
       const { Routes } = require('discord-api-types/v10');
@@ -1202,13 +1124,15 @@ const port = Number(process.env.PORT || 3000);
       console.log('Cleared guild commands.');
     }
   } catch (e) {
-    console.error('Command deploy failed:', e);
+    console.error('Setup failed:', e);
   }
 
+  // Start Express server
   app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 KarmaForges v7.0 running on port ${port}`);
     console.log(`🌐 Website: ${publicBaseUrl()}`);
   });
 
+  // Login Discord bot
   await client.login(DISCORD_TOKEN);
 })();
