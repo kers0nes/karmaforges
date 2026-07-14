@@ -1,5 +1,4 @@
-// server.js – KarmaForges v7.0 (COMPLETE FIXED)
-// OAuth fixed, all commands working, improved UI
+// server.js – KarmaForges v7.0 (OAUTH FULLY FIXED)
 
 const express = require('express');
 const Database = require('better-sqlite3');
@@ -143,12 +142,6 @@ CREATE TABLE IF NOT EXISTS panels (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(user_id) REFERENCES users(id),
   FOREIGN KEY(script_id) REFERENCES scripts(id)
-);
-
-CREATE TABLE IF NOT EXISTS sessions (
-  sid TEXT PRIMARY KEY,
-  sess TEXT NOT NULL,
-  expire INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS obfuscation_logs (
@@ -325,8 +318,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.tailwindcss.com", "https://cdnjs.cloudflare.com"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.tailwindcss.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       imgSrc: ["'self'", "data:", "https://cdn.discordapp.com", "https://ui-avatars.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       connectSrc: ["'self'"],
@@ -345,10 +338,11 @@ app.use('/api/', limiter);
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// ============ SESSION MIDDLEWARE (FIXED) ============
 app.use(session({
   secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
+  resave: true,
+  saveUninitialized: true,
   cookie: {
     secure: PUBLIC_BASE_URL.startsWith('https'),
     maxAge: 7 * 24 * 60 * 60 * 1000,
@@ -381,64 +375,73 @@ const upload = multer({
   }
 });
 
-// ============ DISCORD AUTH (FIXED) ============
+// ============ DISCORD AUTH (COMPLETELY REWRITTEN) ============
+
+// Store OAuth states in memory with expiration
+const oauthStates = new Map();
 
 app.get('/api/auth/discord', (req, res) => {
   const state = crypto.randomBytes(18).toString('hex');
+  const expires = Date.now() + 5 * 60 * 1000; // 5 minutes
   
-  req.session.oauth_state = state;
-  req.session.oauth_state_created = Date.now();
+  oauthStates.set(state, { expires, redirect: req.query.redirect || '/' });
   
-  req.session.save((err) => {
-    if (err) {
-      console.error('Session save error:', err);
-      return res.status(500).send('Failed to initialize authentication');
+  // Clean up old states
+  for (const [key, value] of oauthStates) {
+    if (value.expires < Date.now()) {
+      oauthStates.delete(key);
     }
-    
-    const redirectUri = `${publicBaseUrl()}/api/auth/discord/callback`;
-    const params = new URLSearchParams({
-      client_id: CLIENT_ID,
-      redirect_uri: redirectUri,
-      response_type: 'code',
-      scope: 'identify guilds',
-      state: state
-    });
-    res.redirect(`https://discord.com/oauth2/authorize?${params.toString()}`);
+  }
+  
+  const redirectUri = `${publicBaseUrl()}/api/auth/discord/callback`;
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'identify guilds',
+    state: state
   });
+  
+  console.log(`🔐 OAuth initiated with state: ${state}`);
+  res.redirect(`https://discord.com/oauth2/authorize?${params.toString()}`);
 });
 
 app.get('/api/auth/discord/callback', async (req, res) => {
   const { code, state } = req.query;
   
-  if (!req.session) {
-    console.error('No session object');
-    return res.status(400).send('Invalid OAuth state: No session found. Please try again.');
+  console.log(`🔄 OAuth callback received. State: ${state}, Code: ${code ? 'present' : 'missing'}`);
+  
+  // Check if state exists
+  if (!state) {
+    console.error('❌ No state parameter received');
+    return res.status(400).send('Invalid OAuth state: No state parameter. Please try again.');
   }
   
-  if (!req.session.oauth_state) {
-    console.error('No OAuth state in session');
-    return res.status(400).send('Invalid OAuth state: No session state found. Please try again.');
+  // Check if state is valid
+  if (!oauthStates.has(state)) {
+    console.error(`❌ Invalid state: ${state}`);
+    return res.status(400).send('Invalid OAuth state: State not found. Please try again.');
   }
   
-  if (!state || state !== req.session.oauth_state) {
-    console.error('State mismatch. Expected:', req.session.oauth_state, 'Got:', state);
-    return res.status(400).send('Invalid OAuth state: State mismatch. Please try again.');
+  const stateData = oauthStates.get(state);
+  if (stateData.expires < Date.now()) {
+    console.error('❌ State expired');
+    oauthStates.delete(state);
+    return res.status(400).send('Invalid OAuth state: State expired. Please try again.');
   }
   
-  if (req.session.oauth_state_created) {
-    const age = Date.now() - req.session.oauth_state_created;
-    if (age > 5 * 60 * 1000) {
-      console.error('OAuth state expired');
-      return res.status(400).send('Invalid OAuth state: Session expired. Please try again.');
-    }
-  }
+  // Remove state after use
+  oauthStates.delete(state);
   
   if (!code) {
+    console.error('❌ No code received');
     return res.status(400).send('No authorization code received');
   }
   
   try {
     const redirectUri = `${publicBaseUrl()}/api/auth/discord/callback`;
+    
+    console.log('🔄 Exchanging code for token...');
     const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -451,12 +454,19 @@ app.get('/api/auth/discord/callback', async (req, res) => {
       })
     });
     const tokenData = await tokenResponse.json();
-    if (!tokenResponse.ok) throw new Error('Failed to get token');
+    if (!tokenResponse.ok) {
+      console.error('❌ Token error:', tokenData);
+      throw new Error('Failed to get token: ' + (tokenData.error || 'Unknown error'));
+    }
+    
+    console.log('✅ Token obtained');
     
     const userResponse = await fetch('https://discord.com/api/users/@me', {
       headers: { Authorization: `Bearer ${tokenData.access_token}` }
     });
     const user = await userResponse.json();
+    
+    console.log(`👤 User authenticated: ${user.username} (${user.id})`);
     
     let dbUser = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(user.id);
     if (!dbUser) {
@@ -467,15 +477,15 @@ app.get('/api/auth/discord/callback', async (req, res) => {
          VALUES (?, ?, ?, ?, ?)`
       ).run(id, user.id, user.username, user.avatar || '', referralCode);
       dbUser = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(user.id);
+      console.log('✅ New user created');
     } else {
       db.prepare(
         'UPDATE users SET username = ?, avatar = ?, updated_at = CURRENT_TIMESTAMP WHERE discord_id = ?'
       ).run(user.username, user.avatar || '', user.id);
+      console.log('✅ User updated');
     }
-
-    req.session.oauth_state = null;
-    req.session.oauth_state_created = null;
     
+    // Set session
     req.session.user = {
       id: dbUser.id,
       discord_id: user.id,
@@ -487,19 +497,24 @@ app.get('/api/auth/discord/callback', async (req, res) => {
     };
     
     req.session.save((err) => {
-      if (err) console.error('Session save error:', err);
+      if (err) {
+        console.error('❌ Session save error:', err);
+        return res.status(500).send('Failed to save session. Please try again.');
+      }
+      console.log('✅ Session saved');
       const redirectUrl = `${publicBaseUrl()}/dashboard#user=${encodeURIComponent(user.username)}&id=${user.id}&avatar=${user.avatar || ''}`;
       res.redirect(redirectUrl);
     });
   } catch (e) {
-    console.error('Auth error:', e);
+    console.error('❌ Auth error:', e);
     res.status(500).send('Authentication failed: ' + e.message);
   }
 });
 
 app.get('/logout', (req, res) => {
-  req.session.destroy();
-  res.redirect('/');
+  req.session.destroy(() => {
+    res.redirect('/');
+  });
 });
 
 // ============ API ROUTES ============
@@ -814,161 +829,70 @@ client.once('ready', () => {
 client.once('ready', async () => {
   try {
     const commands = [
-      // General
-      {
-        name: 'help',
-        description: 'Show all available commands',
-      },
-      {
-        name: 'setup',
-        description: 'Create or load your account',
-      },
-      {
-        name: 'scripts',
-        description: 'List all your scripts',
-      },
-      {
-        name: 'keys',
-        description: 'List all your keys',
-      },
-      
-      // Key Management
+      { name: 'help', description: 'Show all available commands' },
+      { name: 'setup', description: 'Create or load your account' },
+      { name: 'scripts', description: 'List all your scripts' },
+      { name: 'keys', description: 'List all your keys' },
       {
         name: 'key',
         description: 'Generate a license key',
         options: [
-          {
-            name: 'script_id',
-            description: 'The script ID',
-            type: 3,
-            required: true,
-          },
-          {
-            name: 'hours',
-            description: 'Duration in hours (0 = permanent)',
-            type: 4,
-            required: false,
-          }
+          { name: 'script_id', description: 'The script ID', type: 3, required: true },
+          { name: 'hours', description: 'Duration in hours (0 = permanent)', type: 4, required: false }
         ]
       },
       {
         name: 'reset-hwid',
         description: 'Reset HWID for a key (24h cooldown)',
         options: [
-          {
-            name: 'key',
-            description: 'The key to reset',
-            type: 3,
-            required: true,
-          }
+          { name: 'key', description: 'The key to reset', type: 3, required: true }
         ]
       },
       {
         name: 'resethwid-user',
         description: 'Reset HWID for a specific user (owner only)',
         options: [
-          {
-            name: 'user',
-            description: 'The user to reset HWID for',
-            type: 6,
-            required: true,
-          }
+          { name: 'user', description: 'The user to reset HWID for', type: 6, required: true }
         ]
       },
-      
-      // Panel Setup
       {
         name: 'panelsetup',
         description: 'Create a Discord panel for your script',
         options: [
-          {
-            name: 'script_name',
-            description: 'The name of your script',
-            type: 3,
-            required: true,
-          },
-          {
-            name: 'title',
-            description: 'Panel title (default: script name)',
-            type: 3,
-            required: false,
-          },
-          {
-            name: 'description',
-            description: 'Panel description',
-            type: 3,
-            required: false,
-          }
+          { name: 'script_name', description: 'The name of your script', type: 3, required: true },
+          { name: 'title', description: 'Panel title (default: script name)', type: 3, required: false },
+          { name: 'description', description: 'Panel description', type: 3, required: false }
         ]
       },
-      
-      // Whitelist
       {
         name: 'whitelist',
         description: 'Whitelist a user for your script',
         options: [
-          {
-            name: 'script_id',
-            description: 'Script ID',
-            type: 3,
-            required: true,
-          },
-          {
-            name: 'user',
-            description: 'User to whitelist',
-            type: 6,
-            required: true,
-          },
-          {
-            name: 'hours',
-            description: 'Duration in hours',
-            type: 4,
-            required: false,
-          }
+          { name: 'script_id', description: 'Script ID', type: 3, required: true },
+          { name: 'user', description: 'User to whitelist', type: 6, required: true },
+          { name: 'hours', description: 'Duration in hours', type: 4, required: false }
         ]
       },
-      
-      // HWID Bans (Owner only)
       {
         name: 'banhwid-user',
         description: 'Ban a user\'s HWID (owner only)',
         options: [
-          {
-            name: 'user',
-            description: 'The user to ban',
-            type: 6,
-            required: true,
-          },
-          {
-            name: 'reason',
-            description: 'Reason for the ban',
-            type: 3,
-            required: false,
-          }
+          { name: 'user', description: 'The user to ban', type: 6, required: true },
+          { name: 'reason', description: 'Reason for the ban', type: 3, required: false }
         ]
       },
       {
         name: 'banhwid',
         description: 'Ban an HWID directly (owner only)',
         options: [
-          {
-            name: 'hwid',
-            description: 'HWID to ban',
-            type: 3,
-            required: true,
-          }
+          { name: 'hwid', description: 'HWID to ban', type: 3, required: true }
         ]
       },
       {
         name: 'unbanhwid',
         description: 'Unban an HWID (owner only)',
         options: [
-          {
-            name: 'hwid',
-            description: 'HWID to unban',
-            type: 3,
-            required: true,
-          }
+          { name: 'hwid', description: 'HWID to unban', type: 3, required: true }
         ]
       }
     ];
@@ -976,7 +900,6 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
     console.log('✅ All slash commands registered successfully!');
-    console.log('📋 Commands will appear in Discord within ~1 hour.');
     
   } catch (error) {
     console.error('❌ Failed to register slash commands:', error);
@@ -992,7 +915,6 @@ client.on('interactionCreate', async (interaction) => {
   const user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
 
   try {
-    // ===== HELP =====
     if (commandName === 'help') {
       const embed = new EmbedBuilder()
         .setColor(BRAND_COLOR)
@@ -1026,7 +948,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== SETUP =====
     if (commandName === 'setup') {
       let dbUser = user;
       if (!dbUser) {
@@ -1058,7 +979,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== SCRIPTS =====
     if (commandName === 'scripts') {
       if (!user) return interaction.reply({ content: 'Use /setup first', ephemeral: true });
 
@@ -1077,7 +997,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== KEYS =====
     if (commandName === 'keys') {
       if (!user) return interaction.reply({ content: 'Use /setup first', ephemeral: true });
 
@@ -1089,7 +1008,7 @@ client.on('interactionCreate', async (interaction) => {
         .setTitle(`🔑 Your Keys (${keys.length})`)
         .setDescription(keys.map(k => {
           const expired = k.expires_at && new Date(k.expires_at).getTime() < Date.now();
-          return `\`${k.key}\` - ${expired ? '❌ Expired' : '✅ Active'} - ${k.hwid ? '🔒 HWID-Locked' : '🔓 Open'}`;
+          return `\`${k.key}\` - ${expired ? '❌ Expired' : '✅ Active'} - ${k.hwid ? '🔒 Locked' : '🔓 Open'}`;
         }).join('\n'))
         .setTimestamp();
 
@@ -1097,7 +1016,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== KEY (generate) =====
     if (commandName === 'key') {
       if (!user) return interaction.reply({ content: 'Use /setup first', ephemeral: true });
 
@@ -1130,7 +1048,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== RESET-HWID (key) =====
     if (commandName === 'reset-hwid') {
       if (!user) return interaction.reply({ content: 'Use /setup first', ephemeral: true });
 
@@ -1154,7 +1071,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== RESETHWID-USER =====
     if (commandName === 'resethwid-user') {
       if (!isOwner(user)) return interaction.reply({ content: '❌ Owner only command', ephemeral: true });
 
@@ -1163,15 +1079,12 @@ client.on('interactionCreate', async (interaction) => {
       if (!target) return interaction.reply({ content: '❌ User not found in database', ephemeral: true });
 
       db.prepare('UPDATE users SET hwid = NULL WHERE id = ?').run(target.id);
-      
-      // Also reset all keys for this user
       db.prepare('UPDATE keys SET hwid = NULL, resettable_at = CURRENT_TIMESTAMP WHERE user_id = ?').run(target.id);
 
       await interaction.reply({ content: `✅ HWID reset for ${targetUser} (\`${targetUser.id}\`)` });
       return;
     }
 
-    // ===== PANELSETUP =====
     if (commandName === 'panelsetup') {
       if (!user) return interaction.reply({ content: 'Use /setup first', ephemeral: true });
 
@@ -1182,14 +1095,12 @@ client.on('interactionCreate', async (interaction) => {
       const script = db.prepare('SELECT * FROM scripts WHERE user_id = ? AND name = ?').get(user.id, scriptName);
       if (!script) return interaction.reply({ content: `❌ Script "${scriptName}" not found`, ephemeral: true });
 
-      // Create panel in database
       const panelId = makeId('panel');
       db.prepare(
         `INSERT INTO panels (id, user_id, name, description, channel_id, script_id)
          VALUES (?, ?, ?, ?, ?, ?)`
       ).run(panelId, user.id, title, description, interaction.channelId, script.id);
 
-      // Send the panel embed with buttons
       const embed = new EmbedBuilder()
         .setColor(BRAND_COLOR)
         .setTitle(`📦 ${title}`)
@@ -1203,47 +1114,23 @@ client.on('interactionCreate', async (interaction) => {
         .setTimestamp();
 
       const row1 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`pv_${script.id}`)
-          .setLabel('View Script')
-          .setStyle(ButtonStyle.Primary)
-          .setEmoji('👁️'),
-        new ButtonBuilder()
-          .setCustomId(`pr_${script.id}`)
-          .setLabel('Redeem Key')
-          .setStyle(ButtonStyle.Success)
-          .setEmoji('🔑')
+        new ButtonBuilder().setCustomId(`pv_${script.id}`).setLabel('View Script').setStyle(ButtonStyle.Primary).setEmoji('👁️'),
+        new ButtonBuilder().setCustomId(`pr_${script.id}`).setLabel('Redeem Key').setStyle(ButtonStyle.Success).setEmoji('🔑')
       );
 
       const row2 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`ki_${script.id}`)
-          .setLabel('Key Info')
-          .setStyle(ButtonStyle.Secondary)
-          .setEmoji('ℹ️'),
-        new ButtonBuilder()
-          .setCustomId(`gb_${script.id}`)
-          .setLabel('Get Buyer Role')
-          .setStyle(ButtonStyle.Primary)
-          .setEmoji('🛒')
+        new ButtonBuilder().setCustomId(`ki_${script.id}`).setLabel('Key Info').setStyle(ButtonStyle.Secondary).setEmoji('ℹ️'),
+        new ButtonBuilder().setCustomId(`gb_${script.id}`).setLabel('Get Buyer Role').setStyle(ButtonStyle.Primary).setEmoji('🛒')
       );
 
       const row3 = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`ph_${script.id}`)
-          .setLabel('Reset HWID')
-          .setStyle(ButtonStyle.Danger)
-          .setEmoji('🔄')
+        new ButtonBuilder().setCustomId(`ph_${script.id}`).setLabel('Reset HWID').setStyle(ButtonStyle.Danger).setEmoji('🔄')
       );
 
-      await interaction.reply({
-        embeds: [embed],
-        components: [row1, row2, row3]
-      });
+      await interaction.reply({ embeds: [embed], components: [row1, row2, row3] });
       return;
     }
 
-    // ===== WHITELIST =====
     if (commandName === 'whitelist') {
       if (!user) return interaction.reply({ content: 'Use /setup first', ephemeral: true });
 
@@ -1257,9 +1144,7 @@ client.on('interactionCreate', async (interaction) => {
       let target = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(targetUser.id);
       if (!target) {
         const id = makeId('user');
-        db.prepare(
-          `INSERT INTO users (id, discord_id, username) VALUES (?, ?, ?)`
-        ).run(id, targetUser.id, targetUser.username);
+        db.prepare(`INSERT INTO users (id, discord_id, username) VALUES (?, ?, ?)`).run(id, targetUser.id, targetUser.username);
         target = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(targetUser.id);
       }
 
@@ -1275,7 +1160,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== BANHWID-USER =====
     if (commandName === 'banhwid-user') {
       if (!isOwner(user)) return interaction.reply({ content: '❌ Owner only command', ephemeral: true });
 
@@ -1285,15 +1169,12 @@ client.on('interactionCreate', async (interaction) => {
       const target = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(targetUser.id);
       if (!target) return interaction.reply({ content: '❌ User not found in database', ephemeral: true });
 
-      // Check if user has an HWID
       if (!target.hwid) return interaction.reply({ content: `❌ ${targetUser} has no HWID registered`, ephemeral: true });
 
-      // Ban the HWID
       db.prepare(
         'INSERT OR REPLACE INTO banned_hwids (hwid, user_id, reason, banned_by) VALUES (?, ?, ?, ?)'
       ).run(target.hwid, target.id, reason, interaction.user.id);
 
-      // Mark user as banned
       db.prepare('UPDATE users SET hwid_banned = 1 WHERE id = ?').run(target.id);
 
       await interaction.reply({ 
@@ -1302,7 +1183,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== BANHWID =====
     if (commandName === 'banhwid') {
       if (!isOwner(user)) return interaction.reply({ content: '❌ Owner only command', ephemeral: true });
 
@@ -1312,14 +1192,11 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ===== UNBANHWID =====
     if (commandName === 'unbanhwid') {
       if (!isOwner(user)) return interaction.reply({ content: '❌ Owner only command', ephemeral: true });
 
       const hwid = options.getString('hwid');
       db.prepare('DELETE FROM banned_hwids WHERE hwid = ?').run(hwid);
-      
-      // Also unban any users with this HWID
       db.prepare('UPDATE users SET hwid_banned = 0 WHERE hwid = ?').run(hwid);
       
       await interaction.reply({ content: `✅ HWID \`${hwid}\` unbanned` });
@@ -1349,7 +1226,7 @@ client.on('interactionCreate', async (interaction) => {
     const script = db.prepare('SELECT * FROM scripts WHERE id = ?').get(scriptId);
     if (!script) return interaction.reply({ content: '❌ Script not found', ephemeral: true });
 
-    if (action === 'pv') { // View Script
+    if (action === 'pv') {
       const keys = db.prepare('SELECT COUNT(*) as count FROM keys WHERE script_id = ?').get(scriptId);
       const embed = new EmbedBuilder()
         .setColor(BRAND_COLOR)
@@ -1367,7 +1244,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (action === 'pr') { // Redeem Key - Show Modal
+    if (action === 'pr') {
       const modal = new ModalBuilder()
         .setCustomId(`rm_${scriptId}`)
         .setTitle('Redeem License Key');
@@ -1387,7 +1264,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (action === 'ki') { // Key Info
+    if (action === 'ki') {
       const keys = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 5').all(scriptId, user.id);
       if (!keys.length) return interaction.reply({ content: '🔑 No keys found for this script.', ephemeral: true });
 
@@ -1405,7 +1282,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (action === 'gb') { // Get Buyer Role
+    if (action === 'gb') {
       await interaction.reply({ 
         content: '🛒 To get the buyer role, please contact support with your key.\nIf you already have a key, use the **Redeem Key** button first.',
         ephemeral: true 
@@ -1413,7 +1290,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (action === 'ph') { // Reset HWID - Show Modal
+    if (action === 'ph') {
       const modal = new ModalBuilder()
         .setCustomId(`hm_${scriptId}`)
         .setTitle('Reset HWID');
@@ -1449,7 +1326,7 @@ client.on('interactionCreate', async (interaction) => {
     const user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
     if (!user) return interaction.reply({ content: 'Use /setup first', ephemeral: true });
 
-    if (customId.startsWith('rm_')) { // Redeem Key Modal
+    if (customId.startsWith('rm_')) {
       const scriptId = customId.slice(3);
       const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase();
 
@@ -1472,7 +1349,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (customId.startsWith('hm_')) { // Reset HWID Modal
+    if (customId.startsWith('hm_')) {
       const scriptId = customId.slice(3);
       const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase();
 
@@ -1567,4 +1444,4 @@ const indexHTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-console.log('✅ KarmaForges v7.0 loaded with all fixes');
+console.log('✅ KarmaForges v7.0 loaded with fixed OAuth');
