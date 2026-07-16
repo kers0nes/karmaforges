@@ -38,7 +38,7 @@ if (!DISCORD_TOKEN || !CLIENT_SECRET) {
   process.exit(1);
 }
 
-console.log('KarmaForges Gold Edition starting...');
+console.log('KarmaForges starting...');
 
 const db = new Database(DATABASE_PATH);
 db.pragma('journal_mode = WAL');
