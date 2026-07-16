@@ -1,6 +1,3 @@
-// server.js – Karma.cc (Full LuauProtect Clone)
-// Complete dashboard, fixed OAuth, key system, loader, panels
-
 const express = require('express');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
