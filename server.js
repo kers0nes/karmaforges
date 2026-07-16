@@ -6,10 +6,9 @@ const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const path = require('path');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-	const {
-	  Client,
+const {
+  Client,
   GatewayIntentBits,
   EmbedBuilder,
   Partials,
@@ -116,12 +115,6 @@ CREATE TABLE IF NOT EXISTS panels (
   FOREIGN KEY(script_id) REFERENCES scripts(id)
 );
 
-CREATE TABLE IF NOT EXISTS sessions (
-  sid TEXT PRIMARY KEY,
-  sess TEXT NOT NULL,
-  expire INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS whitelist (
   id TEXT PRIMARY KEY,
   script_id TEXT NOT NULL,
@@ -135,6 +128,13 @@ CREATE TABLE IF NOT EXISTS whitelist (
   FOREIGN KEY(script_id) REFERENCES scripts(id),
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
+
+-- Indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_keys_script_id ON keys(script_id);
+CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_scripts_user_id ON scripts(user_id);
+CREATE INDEX IF NOT EXISTS idx_panels_user_id ON panels(user_id);
+CREATE INDEX IF NOT EXISTS idx_keys_key ON keys(key);
 `);
 
 // ============ HELPERS ============
@@ -179,15 +179,88 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ============ FIXED SESSION & PROXY ============
 app.set('trust proxy', 1);
 
+// Create sessions table manually for better-sqlite3 compatibility
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      sess TEXT NOT NULL,
+      expire INTEGER NOT NULL
+    )
+  `);
+} catch (e) {
+  console.log('Sessions table already exists or error:', e.message);
+}
+
+// Custom session store using better-sqlite3
+class SQLiteSessionStore extends session.Store {
+  constructor(db) {
+    super();
+    this.db = db;
+    // Ensure table exists
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        sid TEXT PRIMARY KEY,
+        sess TEXT NOT NULL,
+        expire INTEGER NOT NULL
+      )
+    `);
+  }
+
+  get(sid, callback) {
+    try {
+      const row = this.db.prepare('SELECT sess FROM sessions WHERE sid = ? AND expire > ?').get(sid, Date.now());
+      if (row) {
+        callback(null, JSON.parse(row.sess));
+      } else {
+        callback(null, null);
+      }
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  set(sid, sess, callback) {
+    try {
+      const expire = sess.cookie?.expires ? new Date(sess.cookie.expires).getTime() : Date.now() + 86400000;
+      this.db.prepare('INSERT OR REPLACE INTO sessions (sid, sess, expire) VALUES (?, ?, ?)')
+        .run(sid, JSON.stringify(sess), expire);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  destroy(sid, callback) {
+    try {
+      this.db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+
+  touch(sid, sess, callback) {
+    try {
+      const expire = sess.cookie?.expires ? new Date(sess.cookie.expires).getTime() : Date.now() + 86400000;
+      this.db.prepare('UPDATE sessions SET expire = ? WHERE sid = ?').run(expire, sid);
+      callback(null);
+    } catch (err) {
+      callback(err);
+    }
+  }
+}
+
 app.use(session({
-  store: new SQLiteStore({ client: db, table: 'sessions' }),
+  store: new SQLiteSessionStore(db),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: { 
     secure: PUBLIC_BASE_URL.startsWith('https'), 
     maxAge: 7 * 24 * 60 * 60 * 1000,
-    sameSite: PUBLIC_BASE_URL.startsWith('https') ? 'none' : 'lax'
+    sameSite: PUBLIC_BASE_URL.startsWith('https') ? 'none' : 'lax',
+    httpOnly: true
   }
 }));
 
@@ -295,7 +368,7 @@ app.post('/api/delete-panel', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/send-panel', (req, res) => {
+app.post('/api/send-panel', async (req, res) => {
   const user = getSessionUser(req);
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const { panelId } = req.body;
@@ -329,9 +402,8 @@ app.post('/api/send-panel', (req, res) => {
       new ButtonBuilder().setCustomId(`resethwid_${script.id}`).setLabel('🔄 Reset HWID').setStyle(ButtonStyle.Danger)
     );
     
-    client.channels.fetch(panel.channel_id).then(channel => {
-      channel.send({ embeds: [embed], components: [row1, row2, row3] });
-    });
+    const channel = await client.channels.fetch(panel.channel_id);
+    await channel.send({ embeds: [embed], components: [row1, row2, row3] });
     res.json({ success: true });
   } catch (e) {
     console.error('Send panel error:', e);
@@ -496,12 +568,10 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   const { code, state } = req.query;
   if (!code || !state) return res.status(400).send('Missing code or state');
   
-  // Simplified state check for better reliability across proxy hops
+  // Fixed: Strict state validation
   if (state !== req.session.oauth_state) {
     console.warn(`OAuth state mismatch: received ${state}, expected ${req.session.oauth_state}`);
-    // If sessions are still failing, we allow it for now to let the user in, 
-    // but log it for security auditing.
-    if (!req.session.oauth_state) console.error("Session lost during OAuth redirect!");
+    return res.status(403).send('Invalid state parameter');
   }
   
   try {
