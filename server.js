@@ -1,3 +1,6 @@
+// server.js – Karma.cc (Full LuauProtect Clone)
+// Complete dashboard, fixed OAuth, key system, loader, panels
+
 const express = require('express');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
@@ -177,7 +180,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.set('trust proxy', 1);
 
 app.use(session({
-  store: new SQLiteStore({ db: 'sessions.sqlite', dir: './' }),
+  store: new SQLiteStore({ client: db, table: 'sessions' }),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
