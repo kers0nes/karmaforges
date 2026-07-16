@@ -435,13 +435,13 @@ app.post('/api/auth/email/login', async (req, res) => {
   res.json({ success: true });
 });
 
-// ============ FIXED DISCORD OAUTH ============
-app.get('/api/auth/discord', (req, res) => {
+// ============ DISCORD OAUTH (NO /api PREFIX) ============
+app.get('/auth/discord', (req, res) => {
   const state = crypto.randomBytes(18).toString('hex');
   req.session.oauth_state = state;
   req.session.save((err) => {
     if (err) console.error('Session save error:', err);
-    const redirectUri = `${publicBaseUrl()}/api/auth/discord/callback`;
+    const redirectUri = `${publicBaseUrl()}/auth/discord/callback`;
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
       redirect_uri: redirectUri,
@@ -453,7 +453,7 @@ app.get('/api/auth/discord', (req, res) => {
   });
 });
 
-app.get('/api/auth/discord/callback', async (req, res) => {
+app.get('/auth/discord/callback', async (req, res) => {
   const { code, state } = req.query;
   if (!code || !state) return res.status(400).send('Missing code or state');
   
@@ -463,7 +463,7 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   }
   
   try {
-    const redirectUri = `${publicBaseUrl()}/api/auth/discord/callback`;
+    const redirectUri = `${publicBaseUrl()}/auth/discord/callback`;
     const tokenResponse = await fetch('https://discord.com/api/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -621,7 +621,7 @@ app.get('/', (req, res) => {
     <input class="input" id="login-password" placeholder="Password" type="password">
     <button class="btn btn-gold" onclick="emailLogin()">Sign In</button>
     <div class="divider">or continue with</div>
-    <a href="/api/auth/discord" class="btn btn-discord">
+    <a href="/auth/discord" class="btn btn-discord">
       <svg width="20" height="20" viewBox="0 0 127.14 96.36" fill="white"><path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.31,60,73.31,53s5-12.74,11.43-12.74S96.1,46,96,53,91.08,65.69,84.69,65.69Z"/></svg>
       Login with Discord
     </a>
@@ -633,7 +633,7 @@ app.get('/', (req, res) => {
     <input class="input" id="register-password" placeholder="Password" type="password">
     <button class="btn btn-gold" onclick="emailRegister()">Create Account</button>
     <div class="divider">or</div>
-    <a href="/api/auth/discord" class="btn btn-discord">
+    <a href="/auth/discord" class="btn btn-discord">
       <svg width="20" height="20" viewBox="0 0 127.14 96.36" fill="white"><path d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.31,60,73.31,53s5-12.74,11.43-12.74S96.1,46,96,53,91.08,65.69,84.69,65.69Z"/></svg>
       Continue with Discord
     </a>
@@ -673,7 +673,7 @@ async function emailRegister() {
 </html>`);
 });
 
-// ============ DASHBOARD WITH LUAUPROTECT-STYLE SIDEBAR ============
+// ============ DASHBOARD ============
 app.get('/dashboard', requireAuth, (req, res) => {
   const user = req.session.user;
   const escapedUsername = escapeHtml(user.global_name || user.username || user.email || 'User');
@@ -686,7 +686,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Karma.cc</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -695,10 +694,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
       color: #e5e5e5;
       min-height: 100vh;
     }
-    
-    /* ===== LUAUPROTECT STYLE SIDEBAR ===== */
     .app { display: flex; height: 100vh; overflow: hidden; }
-    
     .sidebar {
       width: 240px;
       background: #0d0d0d;
@@ -712,7 +708,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
     }
     .sidebar::-webkit-scrollbar { width: 4px; }
     .sidebar::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
-    
     .sidebar-brand {
       font-size: 22px;
       font-weight: 800;
@@ -722,10 +717,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
       margin-bottom: 16px;
     }
     .sidebar-brand span { color: #FFD700; }
-    
-    .sidebar-nav {
-      flex: 1;
-    }
+    .sidebar-nav { flex: 1; }
     .sidebar-nav .nav-item {
       display: flex;
       align-items: center;
@@ -751,7 +743,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
       padding: 12px 12px 6px;
       font-weight: 700;
     }
-    
     .sidebar-footer {
       border-top: 1px solid #1a1a1a;
       padding-top: 12px;
@@ -796,8 +787,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
       transition: all 0.15s;
     }
     .sidebar-footer .logout-btn:hover { background: #1a1a1a; color: #ef4444; }
-    
-    /* ===== MAIN CONTENT ===== */
     .main {
       flex: 1;
       display: flex;
@@ -825,7 +814,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
       cursor: pointer;
       padding: 4px 8px;
     }
-    
     .content {
       flex: 1;
       overflow-y: auto;
@@ -833,8 +821,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
     }
     .content::-webkit-scrollbar { width: 6px; }
     .content::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 4px; }
-    
-    /* ===== CARDS ===== */
     .card {
       background: #111;
       border: 1px solid #1a1a1a;
@@ -844,7 +830,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
     }
     .card h2 { font-size: 18px; font-weight: 700; margin-bottom: 16px; }
     .card h2 span { color: #FFD700; }
-    
     .input, textarea, select {
       width: 100%;
       background: #1a1a1a;
@@ -862,7 +847,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
     }
     textarea { min-height: 100px; font-family: 'Courier New', monospace; resize: vertical; }
     select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23888' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 12px; }
-    
     .btn {
       padding: 10px 20px;
       border: none;
@@ -883,15 +867,11 @@ app.get('/dashboard', requireAuth, (req, res) => {
     .btn-success:hover { background: rgba(16,185,129,0.25); }
     .btn-outline { background: transparent; border: 1px solid #2a2a2a; color: #e5e5e5; }
     .btn-outline:hover { border-color: #FFD700; color: #FFD700; }
-    
     .flex { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .flex-between { display: flex; justify-content: space-between; align-items: center; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    
     .view-section { display: none; }
     .view-section.active { display: block; animation: fadeIn 0.2s ease; }
     @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
-    
     .scripts-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -909,7 +889,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
     .script-card .meta { font-size: 12px; color: #666; margin-bottom: 10px; }
     .script-card .actions { display: flex; gap: 6px; flex-wrap: wrap; }
     .script-card .actions .btn { flex: 1; padding: 6px 10px; font-size: 12px; justify-content: center; }
-    
     .badge {
       display: inline-block;
       padding: 2px 10px;
@@ -920,7 +899,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
     .badge-green { background: rgba(16,185,129,0.15); color: #10b981; }
     .badge-red { background: rgba(239,68,68,0.15); color: #ef4444; }
     .badge-yellow { background: rgba(255,215,0,0.15); color: #FFD700; }
-    
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -936,22 +914,11 @@ app.get('/dashboard', requireAuth, (req, res) => {
     }
     .stat-card .num { font-size: 28px; font-weight: 900; color: #FFD700; }
     .stat-card .label { font-size: 12px; color: #666; margin-top: 4px; }
-    
     .text-muted { color: #666; }
     .mt-8 { margin-top: 8px; }
     .mt-16 { margin-top: 16px; }
-    .gap-8 { gap: 8px; }
-    
     @media (max-width: 768px) {
-      .sidebar { 
-        display: none; 
-        position: fixed; 
-        top: 0; left: 0; 
-        width: 260px; 
-        height: 100vh; 
-        z-index: 1000; 
-        background: #0a0a0a;
-      }
+      .sidebar { display: none; position: fixed; top: 0; left: 0; width: 260px; height: 100vh; z-index: 1000; background: #0a0a0a; }
       .sidebar.open { display: flex; }
       .topbar .right .mobile-toggle { display: block; }
       .main { width: 100%; }
@@ -964,54 +931,34 @@ app.get('/dashboard', requireAuth, (req, res) => {
 </head>
 <body>
 <div class="app">
-  <!-- SIDEBAR -->
   <div class="sidebar" id="sidebar">
     <div class="sidebar-brand">Karma<span>.cc</span></div>
     <div class="sidebar-nav">
       <div class="nav-label">Navigation</div>
-      <div class="nav-item active" onclick="switchView('overview', this)">
-        <span class="icon">📊</span> Overview
-      </div>
-      <div class="nav-item" onclick="switchView('scripts', this)">
-        <span class="icon">📜</span> Scripts
-      </div>
-      <div class="nav-item" onclick="switchView('panels', this)">
-        <span class="icon">📋</span> Panels
-      </div>
-      <div class="nav-item" onclick="switchView('keys', this)">
-        <span class="icon">🔑</span> Keys
-      </div>
-      <div class="nav-item" onclick="switchView('hwids', this)">
-        <span class="icon">🚫</span> HWID Bans
-      </div>
+      <div class="nav-item active" onclick="switchView('overview', this)"><span class="icon">📊</span> Overview</div>
+      <div class="nav-item" onclick="switchView('scripts', this)"><span class="icon">📜</span> Scripts</div>
+      <div class="nav-item" onclick="switchView('panels', this)"><span class="icon">📋</span> Panels</div>
+      <div class="nav-item" onclick="switchView('keys', this)"><span class="icon">🔑</span> Keys</div>
+      <div class="nav-item" onclick="switchView('hwids', this)"><span class="icon">🚫</span> HWID Bans</div>
       <div class="nav-label mt-16">Legal</div>
-      <div class="nav-item" onclick="alert('Terms & Privacy')">
-        <span class="icon">⚖️</span> Terms & Privacy
-      </div>
+      <div class="nav-item" onclick="alert('Terms & Privacy')"><span class="icon">⚖️</span> Terms & Privacy</div>
     </div>
     <div class="sidebar-footer">
       <div class="user-row">
         <img class="avatar" src="${avatarUrl}" alt="Avatar">
-        <div>
-          <div class="name">${escapedUsername}</div>
-          <div class="tag">${user.discord_id ? 'Discord' : 'Email'}</div>
-        </div>
+        <div><div class="name">${escapedUsername}</div><div class="tag">${user.discord_id ? 'Discord' : 'Email'}</div></div>
       </div>
       <button class="logout-btn" onclick="logout()">🚪 Log out</button>
     </div>
   </div>
   
-  <!-- MAIN -->
   <div class="main">
     <div class="topbar">
       <div class="page-title"><span id="pageTitle">Overview</span></div>
-      <div class="right">
-        <button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
-      </div>
+      <div class="right"><button class="mobile-toggle" onclick="toggleSidebar()">☰</button></div>
     </div>
     
     <div class="content">
-      <!-- OVERVIEW -->
       <div id="view-overview" class="view-section active">
         <div class="card">
           <h2>Welcome, <span>${escapedUsername}</span></h2>
@@ -1030,7 +977,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
         </div>
       </div>
       
-      <!-- SCRIPTS -->
       <div id="view-scripts" class="view-section">
         <div class="card">
           <h2>Your <span>Scripts</span></h2>
@@ -1046,7 +992,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
         <div id="scriptsList" class="scripts-grid"></div>
       </div>
       
-      <!-- PANELS -->
       <div id="view-panels" class="view-section">
         <div class="card">
           <h2>Discord <span>Panels</span></h2>
@@ -1062,21 +1007,17 @@ app.get('/dashboard', requireAuth, (req, res) => {
         <div id="panelsList" class="scripts-grid"></div>
       </div>
       
-      <!-- KEYS -->
       <div id="view-keys" class="view-section">
         <div class="card">
           <h2>Generate <span>Keys</span></h2>
           <select id="keyPanel"><option value="">Select panel...</option></select>
           <input type="number" id="keyDuration" placeholder="Duration (hours, 0 = permanent)" value="0">
           <input type="text" id="keyNote" placeholder="Note (optional)">
-          <div class="flex">
-            <button class="btn btn-gold" onclick="generateKey()">Generate Key</button>
-          </div>
+          <button class="btn btn-gold" onclick="generateKey()">Generate Key</button>
         </div>
         <div id="keysList" class="scripts-grid"></div>
       </div>
       
-      <!-- HWID BANS -->
       <div id="view-hwids" class="view-section">
         <div class="card">
           <h2>Ban <span>HWID</span></h2>
@@ -1094,8 +1035,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
 <script>
 let currentData = { scripts: [], panels: [], keys: [], bannedHWIDs: [] };
 let serverTime = Date.now();
-
-function getHeaders() { return { 'Content-Type': 'application/json' }; }
 
 async function loadData() {
   try {
@@ -1224,12 +1163,18 @@ function toggleSidebar() {
   document.getElementById('sidebar').classList.toggle('open');
 }
 
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 async function createScript() {
   const name = document.getElementById('scriptName').value.trim();
   const code = document.getElementById('scriptCode').value;
   const compressMode = document.getElementById('compressMode').checked;
   if (!name || !code) return alert('Please enter a name and code.');
-  await fetch('/api/create-script', { method:'POST', headers:getHeaders(), body:JSON.stringify({name,code,compressMode}) });
+  await fetch('/api/create-script', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,code,compressMode}) });
   document.getElementById('scriptName').value = '';
   document.getElementById('scriptCode').value = '';
   document.getElementById('compressMode').checked = false;
@@ -1237,18 +1182,18 @@ async function createScript() {
 }
 
 async function toggleScript(id) {
-  await fetch('/api/scripts/'+id+'/toggle', { method:'PUT', headers:getHeaders() });
+  await fetch('/api/scripts/'+id+'/toggle', { method:'PUT', headers:{'Content-Type':'application/json'} });
   loadData();
 }
 
 async function toggleFfa(id) {
-  await fetch('/api/scripts/'+id+'/ffa', { method:'PUT', headers:getHeaders() });
+  await fetch('/api/scripts/'+id+'/ffa', { method:'PUT', headers:{'Content-Type':'application/json'} });
   loadData();
 }
 
 async function deleteScript(id) {
   if (!confirm('Delete this script?')) return;
-  await fetch('/api/delete-script', { method:'POST', headers:getHeaders(), body:JSON.stringify({id}) });
+  await fetch('/api/delete-script', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id}) });
   loadData();
 }
 
@@ -1259,7 +1204,7 @@ async function createPanel() {
   const scriptId = document.getElementById('panelScript').value;
   const hwidCooldown = parseInt(document.getElementById('panelCooldown').value) || 180;
   if (!name || !channelId || !scriptId) return alert('Please fill in all required fields.');
-  await fetch('/api/create-panel', { method:'POST', headers:getHeaders(), body:JSON.stringify({name,description,channelId,scriptId,hwidCooldown}) });
+  await fetch('/api/create-panel', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,description,channelId,scriptId,hwidCooldown}) });
   document.getElementById('panelName').value = '';
   document.getElementById('panelDesc').value = '';
   document.getElementById('panelChannel').value = '';
@@ -1268,13 +1213,13 @@ async function createPanel() {
 }
 
 async function sendPanel(id) {
-  await fetch('/api/send-panel', { method:'POST', headers:getHeaders(), body:JSON.stringify({panelId:id}) });
+  await fetch('/api/send-panel', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({panelId:id}) });
   alert('Panel sent to Discord!');
 }
 
 async function deletePanel(id) {
   if (!confirm('Delete this panel?')) return;
-  await fetch('/api/delete-panel', { method:'POST', headers:getHeaders(), body:JSON.stringify({id}) });
+  await fetch('/api/delete-panel', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id}) });
   loadData();
 }
 
@@ -1283,35 +1228,29 @@ async function generateKey() {
   const durationHours = parseInt(document.getElementById('keyDuration').value) || 0;
   const note = document.getElementById('keyNote').value.trim();
   if (!panelId) return alert('Please select a panel.');
-  await fetch('/api/generate-key', { method:'POST', headers:getHeaders(), body:JSON.stringify({panelId,durationHours,note}) });
+  await fetch('/api/generate-key', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({panelId,durationHours,note}) });
   document.getElementById('keyNote').value = '';
   loadData();
 }
 
 async function deleteKey(key) {
   if (!confirm('Delete this key?')) return;
-  await fetch('/api/delete-key', { method:'POST', headers:getHeaders(), body:JSON.stringify({key}) });
+  await fetch('/api/delete-key', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key}) });
   loadData();
 }
 
 async function banHwid() {
   const hwid = document.getElementById('banHwidInput').value.trim();
   if (!hwid) return alert('Enter an HWID to ban.');
-  await fetch('/api/ban-hwid', { method:'POST', headers:getHeaders(), body:JSON.stringify({hwid}) });
+  await fetch('/api/ban-hwid', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({hwid}) });
   document.getElementById('banHwidInput').value = '';
   loadData();
 }
 
 async function unbanHwid(hwid) {
   if (!confirm('Unban this HWID?')) return;
-  await fetch('/api/unban-hwid', { method:'POST', headers:getHeaders(), body:JSON.stringify({hwid}) });
+  await fetch('/api/unban-hwid', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({hwid}) });
   loadData();
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 function logout() {
@@ -1319,7 +1258,6 @@ function logout() {
   window.location.href = '/logout';
 }
 
-// Close sidebar on outside click
 document.addEventListener('click', function(e) {
   const sidebar = document.getElementById('sidebar');
   const toggle = document.querySelector('.mobile-toggle');
@@ -1337,7 +1275,7 @@ setInterval(loadData, 30000);
 </html>`);
 });
 
-// ============ LOADER ROUTES (LuauProtect style) ============
+// ============ LOADER ROUTES ============
 app.get('/loader/:scriptId', (req, res) => {
   const { scriptId, key, hwid } = req.query;
   if (!scriptId) return res.status(400).type('text/plain').send('-- Missing script ID');
@@ -1346,17 +1284,14 @@ app.get('/loader/:scriptId', (req, res) => {
   if (!script) return res.status(404).type('text/plain').send('-- Script not found');
   if (script.status === 'disabled') return res.status(403).type('text/plain').send('-- Script disabled');
   
-  // If FFA mode, no key needed
   if (script.ffa_mode) {
     return res.type('text/plain').send(`loadstring(game:HttpGet("${publicBaseUrl()}/script/${scriptId}"))()`);
   }
   
-  // Key required for non-FFA
   if (!key) return res.status(403).type('text/plain').send('-- Missing key');
   
   const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ?').get(key, scriptId);
   if (!keyRecord) return res.status(403).type('text/plain').send('-- Invalid key');
-  
   if (keyRecord.expires_at && new Date(keyRecord.expires_at).getTime() < Date.now()) {
     return res.status(403).type('text/plain').send('-- Key expired');
   }
@@ -1374,10 +1309,7 @@ app.get('/loader/:scriptId', (req, res) => {
   }
   
   db.prepare('UPDATE keys SET last_used_at = CURRENT_TIMESTAMP WHERE key = ?').run(key);
-  
-  // LuauProtect style loader response
-  const baseUrl = publicBaseUrl();
-  res.type('text/plain').send(`loadstring(game:HttpGet("${baseUrl}/script/${scriptId}?key=${key}"))()`);
+  res.type('text/plain').send(`loadstring(game:HttpGet("${publicBaseUrl()}/script/${scriptId}?key=${key}"))()`);
 });
 
 app.get('/script/:scriptId', (req, res) => {
@@ -1385,19 +1317,16 @@ app.get('/script/:scriptId', (req, res) => {
   if (!script) return res.status(404).type('text/plain').send('-- Script not found');
   if (script.status === 'disabled') return res.status(403).type('text/plain').send('-- Script disabled');
   
-  // FFA mode - no key check
   if (script.ffa_mode) {
     res.setHeader('Cache-Control', 'no-store');
     return res.type('text/plain').send(script.code || '-- Empty');
   }
   
-  // Non-FFA - require key
   const { key, hwid } = req.query;
   if (!key) return res.status(403).type('text/plain').send('-- Missing key');
   
   const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ?').get(key, req.params.scriptId);
   if (!keyRecord) return res.status(403).type('text/plain').send('-- Invalid key');
-  
   if (keyRecord.expires_at && new Date(keyRecord.expires_at).getTime() < Date.now()) {
     return res.status(403).type('text/plain').send('-- Key expired');
   }
@@ -1439,7 +1368,6 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton() && !interaction.isModalSubmit()) return;
   
   try {
-    // Ensure user exists in DB
     let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
     if (!user) {
       const id = `user_${crypto.randomBytes(8).toString('hex')}`;
@@ -1449,14 +1377,13 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     if (interaction.isButton()) {
-      const customId = interaction.customId;
-      const parts = customId.split('_');
+      const parts = interaction.customId.split('_');
       const action = parts[0];
       const scriptId = parts.slice(1).join('_');
       
       const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(scriptId, user.id);
       if (!script) {
-        return interaction.reply({ content: '❌ Script not found or you do not own it.', ephemeral: true });
+        return interaction.reply({ content: '❌ Script not found.', ephemeral: true });
       }
       
       if (action === 'view') {
@@ -1472,7 +1399,6 @@ client.on('interactionCreate', async (interaction) => {
           .setFooter({ text: 'Karma.cc' })
           .setTimestamp();
         await interaction.reply({ embeds: [embed], ephemeral: true });
-        
       } else if (action === 'redeem') {
         const modal = new ModalBuilder()
           .setCustomId(`redeem_${scriptId}`)
@@ -1487,19 +1413,17 @@ client.on('interactionCreate', async (interaction) => {
           )
         );
         await interaction.showModal(modal);
-        
       } else if (action === 'loader') {
         const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) ORDER BY created_at DESC').get(scriptId, user.id);
         if (!keyRecord) {
-          return interaction.reply({ content: '❌ No active key found for this script.', ephemeral: true });
+          return interaction.reply({ content: '❌ No active key found.', ephemeral: true });
         }
         const loader = `loadstring(game:HttpGet("${publicBaseUrl()}/loader/${scriptId}?key=${keyRecord.key}"))()`;
         await interaction.reply({ content: `\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
-        
       } else if (action === 'keys') {
         const keys = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC').all(scriptId, user.id);
         if (!keys || keys.length === 0) {
-          return interaction.reply({ content: '❌ No keys found for this script.', ephemeral: true });
+          return interaction.reply({ content: '❌ No keys found.', ephemeral: true });
         }
         let keyList = keys.slice(0, 10).map(k => {
           const status = k.expires_at && new Date(k.expires_at).getTime() < Date.now() ? '❌' : '✅';
@@ -1507,11 +1431,10 @@ client.on('interactionCreate', async (interaction) => {
         }).join('\n');
         if (keys.length > 10) keyList += `\n... and ${keys.length - 10} more`;
         await interaction.reply({ content: `**Keys for ${script.name}**\n${keyList}`, ephemeral: true });
-        
       } else if (action === 'resethwid') {
         const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND hwid IS NOT NULL ORDER BY created_at DESC').get(scriptId, user.id);
         if (!keyRecord) {
-          return interaction.reply({ content: '❌ No HWID-locked key found to reset.', ephemeral: true });
+          return interaction.reply({ content: '❌ No HWID-locked key found.', ephemeral: true });
         }
         db.prepare('UPDATE keys SET hwid = NULL WHERE key = ?').run(keyRecord.key);
         await interaction.reply({ content: `✅ HWID reset for \`${keyRecord.key}\``, ephemeral: true });
@@ -1533,9 +1456,8 @@ client.on('interactionCreate', async (interaction) => {
       
       db.prepare('UPDATE keys SET claimed_by = ?, claimed_tag = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?')
         .run(interaction.user.id, interaction.user.tag, keyVal);
-      await interaction.reply({ content: `✅ Key \`${keyVal}\` redeemed successfully!`, ephemeral: true });
+      await interaction.reply({ content: `✅ Key \`${keyVal}\` redeemed!`, ephemeral: true });
     }
-    
   } catch (error) {
     console.error('Interaction error:', error);
     await interaction.reply({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
