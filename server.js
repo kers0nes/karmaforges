@@ -817,7 +817,7 @@ client.once('ready', () => console.log(`Bot online as ${client.user.tag}`));
 const port = Number(process.env.PORT || 10000);
 (async () => {
   app.listen(port, '0.0.0.0', () => {
-    console.log(`KarmaForges Gold Edition running on port ${port}`);
+    console.log(`KarmaForges running on port ${port}`);
     console.log(`Website: ${publicBaseUrl()}`);
   });
   await client.login(DISCORD_TOKEN);
