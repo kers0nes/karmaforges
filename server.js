@@ -1,4 +1,4 @@
-// server.js – KarmaForges Gold Edition (Full LuauProtect Clone)
+// server.js – Karma.cc (Full LuauProtect Clone)
 // Complete dashboard, fixed OAuth, key system, loader, panels
 
 const express = require('express');
@@ -33,12 +33,12 @@ const OWNER_ID = process.env.OWNER_ID || 'YOUR_DISCORD_ID_HERE';
 const BRAND_COLOR = parseInt(process.env.BRAND_COLOR) || 0xFFD700;
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
-if (!DISCORD_TOKEN || !CLIENT_SECRET) {
-  console.error('Missing DISCORD_TOKEN or CLIENT_SECRET.');
+if (!DISCORD_TOKEN || !CLIENT_ID || !CLIENT_SECRET || !PUBLIC_BASE_URL) {
+  console.error("Missing DISCORD_TOKEN, CLIENT_ID, CLIENT_SECRET, or PUBLIC_BASE_URL.");
   process.exit(1);
 }
 
-console.log('KarmaForges Gold Edition (Full LuauProtect Clone) starting...');
+console.log('Karma.cc (Full LuauProtect Clone) starting...');
 
 const db = new Database(DATABASE_PATH);
 db.pragma('journal_mode = WAL');
@@ -309,7 +309,7 @@ app.post('/api/send-panel', (req, res) => {
         { name: '🛡️ Status', value: script.status === 'active' ? '✅ Active' : '❌ Disabled', inline: true },
         { name: '⏳ HWID Cooldown', value: `${panel.hwid_cooldown}s`, inline: true }
       )
-      .setFooter({ text: 'KarmaForges Gold Edition', iconURL: 'https://cdn.discordapp.com/embed/avatars/0.png' })
+      .setFooter({ text: 'Karma.cc', iconURL: 'https://cdn.discordapp.com/embed/avatars/0.png' })
       .setTimestamp();
     
     const row1 = new ActionRowBuilder().addComponents(
@@ -551,7 +551,7 @@ app.get('/logout', (req, res) => {
   res.redirect('/');
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, name: 'KarmaForges Gold Edition' }));
+app.get('/health', (req, res) => res.json({ ok: true, name: 'Karma.cc' }));
 
 // ============ FULL DASHBOARD HTML (EMBEDDED) ============
 app.get('/', (req, res) => {
@@ -562,11 +562,11 @@ app.get('/', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KarmaForges</title>
-  <meta property="og:site_name" content="KarmaForges" />
-  <meta property="og:title" content="KarmaForges - Premium Script Protection" />
+  <title>Karma.cc</title>
+  <meta property="og:site_name" content="Karma.cc" />
+  <meta property="og:title" content="Karma.cc - Premium Script Protection" />
   <meta property="og:description" content="Protect your scripts with gold-standard security" />
-  <meta property="og:url" content="https://karmaforges.onrender.com/" />
+  <meta property="og:url" content="${publicBaseUrl()}/" />
   <meta name="theme-color" content="#FFD700" />
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
@@ -769,9 +769,9 @@ app.get('/dashboard', requireAuth, (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>KarmaForges</title>
-  <meta property="og:site_name" content="KarmaForges" />
-  <meta property="og:title" content="KarmaForges - Premium Script Protection" />
+  <title>Karma.cc</title>
+  <meta property="og:site_name" content="Karma.cc" />
+  <meta property="og:title" content="Karma.cc - Premium Script Protection" />
   <meta name="theme-color" content="#FFD700" />
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
@@ -1046,7 +1046,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
         </div>
         <div class="panel">
           <h3>Invite Bot</h3>
-          <p style="color: var(--text-muted);">Add the KarmaForges bot to your Discord server.</p>
+          <p style="color: var(--text-muted);">Add the Karma.cc bot to your Discord server.</p>
           <a href="${botInviteUrl}" target="_blank" class="btn btn-gold" style="display: inline-flex; margin-top: 10px;">🤖 Invite Bot</a>
         </div>
       </div>
@@ -1390,7 +1390,7 @@ app.get('/loader/:scriptId', (req, res) => {
   }
   db.prepare('UPDATE keys SET last_used_at = CURRENT_TIMESTAMP WHERE key = ?').run(key);
   const baseUrl = publicBaseUrl();
-  res.type('text/plain').send(`--[[ KarmaForges Loader ]]\nreturn (function()\n  local url = "${baseUrl}/script/${scriptId}?hwid=${hwid||''}&key=${key}"\n  local src = game:HttpGet(url)\n  if not src or #src < 10 then error("Invalid payload") end\n  local func, err = loadstring(src, "@KarmaForges")\n  if not func then error(err) end\n  return func()\nend)()`);
+  res.type('text/plain').send(`--[[ Karma.cc Loader ]]\nreturn (function()\n  local url = "${baseUrl}/script/${scriptId}?hwid=${hwid||''}&key=${key}"\n  local src = game:HttpGet(url)\n  if not src or #src < 10 then error("Invalid payload") end\n  local func, err = loadstring(src, "@Karma.cc")\n  if not func then error(err) end\n  return func()\nend)()`);
 });
 
 app.get('/script/:scriptId', (req, res) => {
@@ -1425,7 +1425,7 @@ app.get('/script/:scriptId', (req, res) => {
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
   partials: [Partials.Channel, Partials.Message],
-  presence: { status: PresenceUpdateStatus.Online, activities: [{ name: 'KarmaForges Gold | /help', type: ActivityType.Watching }] }
+  presence: { status: PresenceUpdateStatus.Online, activities: [{ name: 'Karma.cc | /help', type: ActivityType.Watching }] }
 });
 
 client.once('ready', () => console.log(`Bot online as ${client.user.tag}`));
@@ -1450,7 +1450,7 @@ client.on('interactionCreate', async (interaction) => {
             { name: 'FFA Mode', value: script.ffa_mode ? '✅ Enabled' : '❌ Disabled', inline: true },
             { name: 'Compressed', value: script.compress_mode ? '✅ Yes' : '❌ No', inline: true }
           )
-          .setFooter({ text: 'KarmaForges Gold Edition' })
+          .setFooter({ text: 'Karma.cc' })
           .setTimestamp();
         await interaction.reply({ embeds: [embed], ephemeral: true });
       } else if (action === 'redeem') {
@@ -1498,7 +1498,7 @@ client.on('interactionCreate', async (interaction) => {
 const port = Number(process.env.PORT || 10000);
 (async () => {
   app.listen(port, '0.0.0.0', () => {
-    console.log(`KarmaForges running on port ${port}`);
+    console.log(`Karma.cc running on port ${port}`);
     console.log(`Website: ${publicBaseUrl()}`);
   });
   await client.login(DISCORD_TOKEN);
