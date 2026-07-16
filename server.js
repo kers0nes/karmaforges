@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS panels (
   FOREIGN KEY(script_id) REFERENCES scripts(id)
 );
 
+CREATE TABLE IF NOT EXISTS sessions (
+  sid TEXT PRIMARY KEY,
+  sess TEXT NOT NULL,
+  expire INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS whitelist (
   id TEXT PRIMARY KEY,
   script_id TEXT NOT NULL,
@@ -129,7 +135,6 @@ CREATE TABLE IF NOT EXISTS whitelist (
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
--- Indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_keys_script_id ON keys(script_id);
 CREATE INDEX IF NOT EXISTS idx_keys_user_id ON keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_scripts_user_id ON scripts(user_id);
@@ -179,25 +184,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ============ FIXED SESSION & PROXY ============
 app.set('trust proxy', 1);
 
-// Create sessions table manually for better-sqlite3 compatibility
-try {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      sid TEXT PRIMARY KEY,
-      sess TEXT NOT NULL,
-      expire INTEGER NOT NULL
-    )
-  `);
-} catch (e) {
-  console.log('Sessions table already exists or error:', e.message);
-}
-
 // Custom session store using better-sqlite3
 class SQLiteSessionStore extends session.Store {
   constructor(db) {
     super();
     this.db = db;
-    // Ensure table exists
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         sid TEXT PRIMARY KEY,
@@ -568,7 +559,6 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   const { code, state } = req.query;
   if (!code || !state) return res.status(400).send('Missing code or state');
   
-  // Fixed: Strict state validation
   if (state !== req.session.oauth_state) {
     console.warn(`OAuth state mismatch: received ${state}, expected ${req.session.oauth_state}`);
     return res.status(403).send('Invalid state parameter');
@@ -841,7 +831,6 @@ app.get('/dashboard', requireAuth, (req, res) => {
   const avatarUrl = user.avatar ? `https://cdn.discordapp.com/avatars/${user.discord_id}/${user.avatar}.png?size=128` : 'https://cdn.discordapp.com/embed/avatars/0.png';
   const botInviteUrl = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot`;
   
-  // Full dashboard HTML - This is the complete LuauProtect-style dashboard
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1502,7 +1491,13 @@ app.get('/script/:scriptId', (req, res) => {
 
 // ============ DISCORD BOT ============
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
+  intents: [
+    GatewayIntentBits.Guilds, 
+    GatewayIntentBits.GuildMembers, 
+    GatewayIntentBits.MessageContent, 
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMessages
+  ],
   partials: [Partials.Channel, Partials.Message],
   presence: { status: PresenceUpdateStatus.Online, activities: [{ name: 'Karma.cc | /help', type: ActivityType.Watching }] }
 });
@@ -1512,63 +1507,216 @@ client.once('ready', () => console.log(`Bot online as ${client.user.tag}`));
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
     const customId = interaction.customId;
-    const [action, scriptId] = customId.split('_');
+    const parts = customId.split('_');
+    const action = parts[0];
+    const scriptId = parts.slice(1).join('_');
+    
     try {
-      const user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
-      if (!user) return interaction.reply({ content: 'Use /setup first.', ephemeral: true });
-      const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(scriptId, user.id);
-      if (!script) return interaction.reply({ content: 'Script not found.', ephemeral: true });
+      // Check if user exists in database
+      let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
       
+      // If user doesn't exist, create them
+      if (!user) {
+        const id = `user_${crypto.randomBytes(8).toString('hex')}`;
+        db.prepare(`INSERT INTO users (id, discord_id, username, avatar, provider)
+                    VALUES (?, ?, ?, ?, ?)`).run(id, interaction.user.id, interaction.user.username, interaction.user.avatar || '', 'discord');
+        user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
+      }
+      
+      // Get the script
+      const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(scriptId, user.id);
+      if (!script) {
+        return interaction.reply({ content: '❌ Script not found or you do not own it.', ephemeral: true });
+      }
+      
+      // Handle different button actions
       if (action === 'view') {
         const embed = new EmbedBuilder()
           .setColor(BRAND_COLOR)
           .setTitle(`📋 ${script.name}`)
           .setDescription(`Status: ${script.status === 'active' ? '✅ Active' : '❌ Disabled'}`)
           .addFields(
-            { name: 'Version', value: script.version || '1.0.0', inline: true },
-            { name: 'FFA Mode', value: script.ffa_mode ? '✅ Enabled' : '❌ Disabled', inline: true },
-            { name: 'Compressed', value: script.compress_mode ? '✅ Yes' : '❌ No', inline: true }
+            { name: '📝 Version', value: script.version || '1.0.0', inline: true },
+            { name: '🎯 FFA Mode', value: script.ffa_mode ? '✅ Enabled' : '❌ Disabled', inline: true },
+            { name: '📦 Compressed', value: script.compress_mode ? '✅ Yes' : '❌ No', inline: true },
+            { name: '📅 Created', value: new Date(script.created_at).toLocaleDateString(), inline: true },
+            { name: '🔄 Updated', value: new Date(script.updated_at).toLocaleDateString(), inline: true }
           )
-          .setFooter({ text: 'Karma.cc' })
+          .setFooter({ text: 'Karma.cc', iconURL: 'https://cdn.discordapp.com/embed/avatars/0.png' })
           .setTimestamp();
+        
+        // Add code preview if available
+        if (script.code && script.code.length > 0) {
+          const preview = script.code.length > 1000 ? script.code.substring(0, 1000) + '...' : script.code;
+          embed.addFields({ name: '📄 Code Preview', value: '```lua\n' + preview + '\n```' });
+        }
+        
         await interaction.reply({ embeds: [embed], ephemeral: true });
+        
       } else if (action === 'redeem') {
         const modal = new ModalBuilder()
           .setCustomId(`redeem_${scriptId}`)
-          .setTitle('Redeem Key');
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('key_input')
-              .setLabel('Enter your license key')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-          )
-        );
+          .setTitle('🔑 Redeem License Key');
+        
+        const keyInput = new TextInputBuilder()
+          .setCustomId('key_input')
+          .setLabel('Enter your license key')
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder('e.g., ABCD1234EFGH5678')
+          .setRequired(true)
+          .setMinLength(4)
+          .setMaxLength(32);
+        
+        modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
         await interaction.showModal(modal);
+        
       } else if (action === 'loader') {
-        const key = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC').get(scriptId, user.id);
-        if (!key) return interaction.reply({ content: 'No active key found.', ephemeral: true });
-        const loader = `loadstring(game:HttpGet("${publicBaseUrl()}/loader/${scriptId}?key=${key.key}"))()`;
-        await interaction.reply({ content: `\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
+        // Get the user's key for this script
+        const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) ORDER BY created_at DESC').get(scriptId, user.id);
+        
+        if (!keyRecord) {
+          return interaction.reply({ 
+            content: '❌ No active key found for this script. Please redeem a key first.', 
+            ephemeral: true 
+          });
+        }
+        
+        const loaderCode = `loadstring(game:HttpGet("${publicBaseUrl()}/loader/${scriptId}?key=${keyRecord.key}"))()`;
+        
+        const embed = new EmbedBuilder()
+          .setColor(BRAND_COLOR)
+          .setTitle('⚡ Loader Code')
+          .setDescription('Copy and paste this into your executor:')
+          .addFields(
+            { name: '📜 Script', value: script.name, inline: true },
+            { name: '🔑 Key', value: '`' + keyRecord.key + '`', inline: true }
+          )
+          .setFooter({ text: 'Karma.cc', iconURL: 'https://cdn.discordapp.com/embed/avatars/0.png' })
+          .setTimestamp();
+        
+        await interaction.reply({ 
+          content: '```lua\n' + loaderCode + '\n```',
+          embeds: [embed],
+          ephemeral: true 
+        });
+        
+      } else if (action === 'keys') {
+        // Show all keys for this script
+        const keys = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC').all(scriptId, user.id);
+        
+        if (!keys || keys.length === 0) {
+          return interaction.reply({ 
+            content: '❌ No keys found for this script.', 
+            ephemeral: true 
+          });
+        }
+        
+        let keyList = '';
+        for (const k of keys.slice(0, 10)) {
+          const status = k.expires_at && new Date(k.expires_at).getTime() < Date.now() ? '❌ Expired' : '✅ Active';
+          const hwidStatus = k.hwid ? '🔒 Locked' : '🔓 Unlocked';
+          const expiry = k.expires_at ? new Date(k.expires_at).toLocaleDateString() : 'Permanent';
+          keyList += `\`${k.key}\` - ${status} - ${hwidStatus} - Expires: ${expiry}\n`;
+        }
+        
+        if (keys.length > 10) {
+          keyList += `\n... and ${keys.length - 10} more keys`;
+        }
+        
+        const embed = new EmbedBuilder()
+          .setColor(BRAND_COLOR)
+          .setTitle(`🔐 Keys for ${script.name}`)
+          .setDescription(keyList)
+          .setFooter({ text: `Total: ${keys.length} keys`, iconURL: 'https://cdn.discordapp.com/embed/avatars/0.png' })
+          .setTimestamp();
+        
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        
+      } else if (action === 'resethwid') {
+        // Reset HWID for a key
+        const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND hwid IS NOT NULL ORDER BY created_at DESC').get(scriptId, user.id);
+        
+        if (!keyRecord) {
+          return interaction.reply({ 
+            content: '❌ No HWID-locked key found to reset.', 
+            ephemeral: true 
+          });
+        }
+        
+        db.prepare('UPDATE keys SET hwid = NULL WHERE key = ?').run(keyRecord.key);
+        
+        await interaction.reply({ 
+          content: `✅ HWID reset successfully for key \`${keyRecord.key}\``, 
+          ephemeral: true 
+        });
       }
-    } catch (e) {
-      console.error('Button error:', e);
-      await interaction.reply({ content: 'Error.', ephemeral: true });
+      
+    } catch (error) {
+      console.error('Button interaction error:', error);
+      await interaction.reply({ 
+        content: '❌ An error occurred while processing your request.', 
+        ephemeral: true 
+      });
     }
   }
   
   if (interaction.isModalSubmit()) {
     if (interaction.customId.startsWith('redeem_')) {
       const scriptId = interaction.customId.split('_')[1];
-      const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase();
-      const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ? AND user_id = ?').get(keyVal, scriptId, interaction.user.id);
-      if (!keyRecord) return interaction.reply({ content: 'Invalid key.', ephemeral: true });
-      if (keyRecord.expires_at && new Date(keyRecord.expires_at).getTime() < Date.now()) {
-        return interaction.reply({ content: 'Key expired.', ephemeral: true });
+      const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase().trim();
+      
+      try {
+        // Check if user exists
+        let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
+        if (!user) {
+          const id = `user_${crypto.randomBytes(8).toString('hex')}`;
+          db.prepare(`INSERT INTO users (id, discord_id, username, avatar, provider)
+                      VALUES (?, ?, ?, ?, ?)`).run(id, interaction.user.id, interaction.user.username, interaction.user.avatar || '', 'discord');
+          user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
+        }
+        
+        // Find the key
+        const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ?').get(keyVal, scriptId);
+        
+        if (!keyRecord) {
+          return interaction.reply({ 
+            content: '❌ Invalid key. Please check and try again.', 
+            ephemeral: true 
+          });
+        }
+        
+        // Check if key is expired
+        if (keyRecord.expires_at && new Date(keyRecord.expires_at).getTime() < Date.now()) {
+          return interaction.reply({ 
+            content: '❌ This key has expired.', 
+            ephemeral: true 
+          });
+        }
+        
+        // Check if key is already claimed
+        if (keyRecord.claimed_by) {
+          return interaction.reply({ 
+            content: '❌ This key has already been claimed.', 
+            ephemeral: true 
+          });
+        }
+        
+        // Claim the key
+        db.prepare('UPDATE keys SET claimed_by = ?, claimed_tag = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?')
+          .run(interaction.user.id, interaction.user.tag, keyVal);
+        
+        await interaction.reply({ 
+          content: `✅ Key \`${keyVal}\` redeemed successfully! You can now use the loader button to get your script.`, 
+          ephemeral: true 
+        });
+        
+      } catch (error) {
+        console.error('Modal submit error:', error);
+        await interaction.reply({ 
+          content: '❌ An error occurred while redeeming your key.', 
+          ephemeral: true 
+        });
       }
-      db.prepare('UPDATE keys SET last_used_at = CURRENT_TIMESTAMP WHERE key = ?').run(keyVal);
-      await interaction.reply({ content: '✅ Key redeemed successfully!', ephemeral: true });
     }
   }
 });
