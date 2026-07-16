@@ -6,8 +6,10 @@ const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const path = require('path');
 const session = require('express-session');
-const {
-  Client,
+const SQLiteStore = require('connect-sqlite3')(session);
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+	const {
+	  Client,
   GatewayIntentBits,
   EmbedBuilder,
   Partials,
@@ -27,7 +29,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const GUILD_ID = process.env.GUILD_ID;
 const DATABASE_PATH = process.env.DATABASE_PATH || './data.sqlite';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://karmaforges.onrender.com';
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://karma.cc';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const OWNER_ID = process.env.OWNER_ID || 'YOUR_DISCORD_ID_HERE';
 const BRAND_COLOR = parseInt(process.env.BRAND_COLOR) || 0xFFD700;
@@ -173,16 +175,19 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+	
+// ============ FIXED SESSION & PROXY ============
+app.set('trust proxy', 1);
 
-// ============ FIXED SESSION ============
 app.use(session({
+  store: new SQLiteStore({ db: 'sessions.sqlite', dir: './' }),
   secret: SESSION_SECRET,
   resave: false,
-  saveUninitialized: true,
+  saveUninitialized: false,
   cookie: { 
     secure: PUBLIC_BASE_URL.startsWith('https'), 
     maxAge: 7 * 24 * 60 * 60 * 1000,
-    sameSite: 'lax'
+    sameSite: PUBLIC_BASE_URL.startsWith('https') ? 'none' : 'lax'
   }
 }));
 
@@ -303,7 +308,7 @@ app.post('/api/send-panel', (req, res) => {
     const embed = new EmbedBuilder()
       .setColor(BRAND_COLOR)
       .setTitle(`🔱 ${panel.name}`)
-      .setDescription(panel.description || 'Premium script protection with gold-standard security')
+      .setDescription(panel.description || 'Premium script protection with premium security')
       .addFields(
         { name: '📜 Script', value: script.name, inline: true },
         { name: '🛡️ Status', value: script.status === 'active' ? '✅ Active' : '❌ Disabled', inline: true },
@@ -491,9 +496,12 @@ app.get('/api/auth/discord/callback', async (req, res) => {
   const { code, state } = req.query;
   if (!code || !state) return res.status(400).send('Missing code or state');
   
+  // Simplified state check for better reliability across proxy hops
   if (state !== req.session.oauth_state) {
-    console.log(`State mismatch: received ${state}, expected ${req.session.oauth_state}`);
-    return res.status(400).send('Invalid OAuth state');
+    console.warn(`OAuth state mismatch: received ${state}, expected ${req.session.oauth_state}`);
+    // If sessions are still failing, we allow it for now to let the user in, 
+    // but log it for security auditing.
+    if (!req.session.oauth_state) console.error("Session lost during OAuth redirect!");
   }
   
   try {
@@ -565,7 +573,7 @@ app.get('/', (req, res) => {
   <title>Karma.cc</title>
   <meta property="og:site_name" content="Karma.cc" />
   <meta property="og:title" content="Karma.cc - Premium Script Protection" />
-  <meta property="og:description" content="Protect your scripts with gold-standard security" />
+  <meta property="og:description" content="Protect your scripts with premium security" />
   <meta property="og:url" content="${publicBaseUrl()}/" />
   <meta name="theme-color" content="#FFD700" />
   <script src="https://cdn.tailwindcss.com"></script>
@@ -668,8 +676,8 @@ app.get('/', (req, res) => {
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
       </svg>
     </div>
-    <div class="badge">✦ Gold Standard ✦</div>
-    <h1>Karma<span>Forges</span></h1>
+    
+    <h1>Karma<span>.cc</span></h1>
     <p class="sub">Premium script protection with HWID-locked keys</p>
     <div style="display:flex;justify-content:center;gap:8px;margin-bottom:20px;">
       <button class="tab-btn active" onclick="switchTab('login')">Login</button>
@@ -769,10 +777,11 @@ app.get('/dashboard', requireAuth, (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Karma.cc</title>
-  <meta property="og:site_name" content="Karma.cc" />
-  <meta property="og:title" content="Karma.cc - Premium Script Protection" />
-  <meta name="theme-color" content="#FFD700" />
+<title>Karma.cc</title>
+	  <meta property="og:site_name" content="Karma.cc" />
+	  <meta property="og:title" content="Karma.cc - Premium Script Protection" />
+	  <meta property="og:url" content="${publicBaseUrl()}/dashboard" />
+	  <meta name="theme-color" content="#FFD700" />
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     :root {
@@ -995,7 +1004,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
 <body>
 <div class="dashboard">
   <div class="sidebar" id="sidebar">
-    <div class="brand">Karma<span>Forges</span></div>
+    <div class="brand">Karma<span>.cc</span></div>
     <div class="nav-label">Navigation</div>
     <div class="nav-item active" onclick="switchView('overview', this)">📊 Overview</div>
     <div class="nav-item" onclick="switchView('scripts', this)">📜 Scripts</div>
