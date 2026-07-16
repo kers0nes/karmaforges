@@ -457,6 +457,7 @@ app.get('/auth/discord/callback', async (req, res) => {
   const { code, state } = req.query;
   if (!code || !state) return res.status(400).send('Missing code or state');
   
+  // FIXED: Check state parameter properly
   if (state !== req.session.oauth_state) {
     console.warn(`OAuth state mismatch: received ${state}, expected ${req.session.oauth_state}`);
     return res.status(403).send('Invalid state parameter');
@@ -685,7 +686,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Karma.cc</title>
+  <title>Karma.cc Dashboard</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body {
@@ -1364,112 +1365,177 @@ const client = new Client({
 
 client.once('ready', () => console.log(`Bot online as ${client.user.tag}`));
 
+// FIXED: Improved interaction handling with proper error handling
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isButton() && !interaction.isModalSubmit()) return;
-  
   try {
-    let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
-    if (!user) {
-      const id = `user_${crypto.randomBytes(8).toString('hex')}`;
-      db.prepare(`INSERT INTO users (id, discord_id, username, avatar, provider)
-                  VALUES (?, ?, ?, ?, ?)`).run(id, interaction.user.id, interaction.user.username, interaction.user.avatar || '', 'discord');
-      user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
+    // Handle modals
+    if (interaction.isModalSubmit()) {
+      await handleModalSubmit(interaction);
+      return;
     }
     
+    // Handle buttons
     if (interaction.isButton()) {
-      const parts = interaction.customId.split('_');
-      const action = parts[0];
-      const scriptId = parts.slice(1).join('_');
-      
-      const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(scriptId, user.id);
-      if (!script) {
-        return interaction.reply({ content: '❌ Script not found.', ephemeral: true });
-      }
-      
-      if (action === 'view') {
-        const embed = new EmbedBuilder()
-          .setColor(BRAND_COLOR)
-          .setTitle(`📋 ${script.name}`)
-          .setDescription(`Status: ${script.status === 'active' ? '✅ Active' : '❌ Disabled'}`)
-          .addFields(
-            { name: 'Version', value: script.version || '1.0.0', inline: true },
-            { name: 'FFA Mode', value: script.ffa_mode ? '✅ Enabled' : '❌ Disabled', inline: true },
-            { name: 'Compressed', value: script.compress_mode ? '✅ Yes' : '❌ No', inline: true }
-          )
-          .setFooter({ text: 'Karma.cc' })
-          .setTimestamp();
-        await interaction.reply({ embeds: [embed], ephemeral: true });
-      } else if (action === 'redeem') {
-        const modal = new ModalBuilder()
-          .setCustomId(`redeem_${scriptId}`)
-          .setTitle('Redeem Key');
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('key_input')
-              .setLabel('Enter your license key')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-          )
-        );
-        await interaction.showModal(modal);
-      } else if (action === 'loader') {
-        const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) ORDER BY created_at DESC').get(scriptId, user.id);
-        if (!keyRecord) {
-          return interaction.reply({ content: '❌ No active key found.', ephemeral: true });
-        }
-        const loader = `loadstring(game:HttpGet("${publicBaseUrl()}/loader/${scriptId}?key=${keyRecord.key}"))()`;
-        await interaction.reply({ content: `\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
-      } else if (action === 'keys') {
-        const keys = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC').all(scriptId, user.id);
-        if (!keys || keys.length === 0) {
-          return interaction.reply({ content: '❌ No keys found.', ephemeral: true });
-        }
-        let keyList = keys.slice(0, 10).map(k => {
-          const status = k.expires_at && new Date(k.expires_at).getTime() < Date.now() ? '❌' : '✅';
-          return `\`${k.key}\` ${status}`;
-        }).join('\n');
-        if (keys.length > 10) keyList += `\n... and ${keys.length - 10} more`;
-        await interaction.reply({ content: `**Keys for ${script.name}**\n${keyList}`, ephemeral: true });
-      } else if (action === 'resethwid') {
-        const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND hwid IS NOT NULL ORDER BY created_at DESC').get(scriptId, user.id);
-        if (!keyRecord) {
-          return interaction.reply({ content: '❌ No HWID-locked key found.', ephemeral: true });
-        }
-        db.prepare('UPDATE keys SET hwid = NULL WHERE key = ?').run(keyRecord.key);
-        await interaction.reply({ content: `✅ HWID reset for \`${keyRecord.key}\``, ephemeral: true });
-      }
-    }
-    
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('redeem_')) {
-      const scriptId = interaction.customId.split('_')[1];
-      const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase().trim();
-      
-      const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ?').get(keyVal, scriptId);
-      if (!keyRecord) return interaction.reply({ content: '❌ Invalid key.', ephemeral: true });
-      if (keyRecord.expires_at && new Date(keyRecord.expires_at).getTime() < Date.now()) {
-        return interaction.reply({ content: '❌ Key expired.', ephemeral: true });
-      }
-      if (keyRecord.claimed_by) {
-        return interaction.reply({ content: '❌ Key already claimed.', ephemeral: true });
-      }
-      
-      db.prepare('UPDATE keys SET claimed_by = ?, claimed_tag = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?')
-        .run(interaction.user.id, interaction.user.tag, keyVal);
-      await interaction.reply({ content: `✅ Key \`${keyVal}\` redeemed!`, ephemeral: true });
+      await handleButtonInteraction(interaction);
+      return;
     }
   } catch (error) {
     console.error('Interaction error:', error);
-    await interaction.reply({ content: '❌ An error occurred.', ephemeral: true }).catch(() => {});
+    try {
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp({ content: '❌ An error occurred. Please try again.', ephemeral: true });
+      } else {
+        await interaction.reply({ content: '❌ An error occurred. Please try again.', ephemeral: true });
+      }
+    } catch (e) {
+      console.error('Failed to send error response:', e);
+    }
   }
 });
+
+async function handleButtonInteraction(interaction) {
+  const customId = interaction.customId;
+  
+  // Parse customId properly
+  const parts = customId.split('_');
+  const action = parts[0];
+  const scriptId = parts.slice(1).join('_');
+  
+  if (!scriptId) {
+    return interaction.reply({ content: '❌ Invalid interaction.', ephemeral: true });
+  }
+  
+  // Get or create user
+  let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
+  if (!user) {
+    const id = `user_${crypto.randomBytes(8).toString('hex')}`;
+    db.prepare(`INSERT INTO users (id, discord_id, username, avatar, provider)
+                VALUES (?, ?, ?, ?, ?)`).run(id, interaction.user.id, interaction.user.username, interaction.user.avatar || '', 'discord');
+    user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(interaction.user.id);
+  }
+  
+  const script = db.prepare('SELECT * FROM scripts WHERE id = ? AND user_id = ?').get(scriptId, user.id);
+  if (!script) {
+    return interaction.reply({ content: '❌ Script not found.', ephemeral: true });
+  }
+  
+  switch (action) {
+    case 'view':
+      await handleViewScript(interaction, script);
+      break;
+    case 'redeem':
+      await handleRedeemKey(interaction, scriptId);
+      break;
+    case 'loader':
+      await handleLoader(interaction, scriptId, user);
+      break;
+    case 'keys':
+      await handleListKeys(interaction, scriptId, user);
+      break;
+    case 'resethwid':
+      await handleResetHWID(interaction, scriptId, user);
+      break;
+    default:
+      await interaction.reply({ content: '❌ Unknown action.', ephemeral: true });
+  }
+}
+
+async function handleViewScript(interaction, script) {
+  const embed = new EmbedBuilder()
+    .setColor(BRAND_COLOR)
+    .setTitle(`📋 ${script.name}`)
+    .setDescription(`Status: ${script.status === 'active' ? '✅ Active' : '❌ Disabled'}`)
+    .addFields(
+      { name: 'Version', value: script.version || '1.0.0', inline: true },
+      { name: 'FFA Mode', value: script.ffa_mode ? '✅ Enabled' : '❌ Disabled', inline: true },
+      { name: 'Compressed', value: script.compress_mode ? '✅ Yes' : '❌ No', inline: true }
+    )
+    .setFooter({ text: 'Karma.cc' })
+    .setTimestamp();
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleRedeemKey(interaction, scriptId) {
+  const modal = new ModalBuilder()
+    .setCustomId(`redeem_${scriptId}`)
+    .setTitle('Redeem Key');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('key_input')
+        .setLabel('Enter your license key')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setPlaceholder('ABC123XYZ789')
+    )
+  );
+  await interaction.showModal(modal);
+}
+
+async function handleLoader(interaction, scriptId, user) {
+  const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND (expires_at IS NULL OR expires_at > datetime("now")) ORDER BY created_at DESC').get(scriptId, user.id);
+  if (!keyRecord) {
+    return interaction.reply({ content: '❌ No active key found.', ephemeral: true });
+  }
+  const loader = `loadstring(game:HttpGet("${publicBaseUrl()}/loader/${scriptId}?key=${keyRecord.key}"))()`;
+  await interaction.reply({ content: `\`\`\`lua\n${loader}\n\`\`\``, ephemeral: true });
+}
+
+async function handleListKeys(interaction, scriptId, user) {
+  const keys = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 20').all(scriptId, user.id);
+  if (!keys || keys.length === 0) {
+    return interaction.reply({ content: '❌ No keys found.', ephemeral: true });
+  }
+  let keyList = keys.slice(0, 10).map(k => {
+    const status = k.expires_at && new Date(k.expires_at).getTime() < Date.now() ? '❌' : '✅';
+    return `\`${k.key}\` ${status}`;
+  }).join('\n');
+  if (keys.length > 10) keyList += `\n... and ${keys.length - 10} more`;
+  await interaction.reply({ content: `**Keys for ${script.name}**\n${keyList}`, ephemeral: true });
+}
+
+async function handleResetHWID(interaction, scriptId, user) {
+  const keyRecord = db.prepare('SELECT * FROM keys WHERE script_id = ? AND user_id = ? AND hwid IS NOT NULL ORDER BY created_at DESC').get(scriptId, user.id);
+  if (!keyRecord) {
+    return interaction.reply({ content: '❌ No HWID-locked key found.', ephemeral: true });
+  }
+  db.prepare('UPDATE keys SET hwid = NULL WHERE key = ?').run(keyRecord.key);
+  await interaction.reply({ content: `✅ HWID reset for \`${keyRecord.key}\``, ephemeral: true });
+}
+
+async function handleModalSubmit(interaction) {
+  if (!interaction.customId.startsWith('redeem_')) return;
+  
+  const scriptId = interaction.customId.split('_')[1];
+  const keyVal = interaction.fields.getTextInputValue('key_input').toUpperCase().trim();
+  
+  const keyRecord = db.prepare('SELECT * FROM keys WHERE key = ? AND script_id = ?').get(keyVal, scriptId);
+  if (!keyRecord) {
+    return interaction.reply({ content: '❌ Invalid key.', ephemeral: true });
+  }
+  if (keyRecord.expires_at && new Date(keyRecord.expires_at).getTime() < Date.now()) {
+    return interaction.reply({ content: '❌ Key expired.', ephemeral: true });
+  }
+  if (keyRecord.claimed_by) {
+    return interaction.reply({ content: '❌ Key already claimed.', ephemeral: true });
+  }
+  
+  db.prepare('UPDATE keys SET claimed_by = ?, claimed_tag = ?, last_used_at = CURRENT_TIMESTAMP WHERE key = ?')
+    .run(interaction.user.id, interaction.user.tag, keyVal);
+  await interaction.reply({ content: `✅ Key \`${keyVal}\` redeemed!`, ephemeral: true });
+}
 
 // ============ START SERVER ============
 const port = Number(process.env.PORT || 10000);
 (async () => {
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`Karma.cc running on port ${port}`);
-    console.log(`Website: ${publicBaseUrl()}`);
-  });
-  await client.login(DISCORD_TOKEN);
+  try {
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`Karma.cc running on port ${port}`);
+      console.log(`Website: ${publicBaseUrl()}`);
+    });
+    await client.login(DISCORD_TOKEN);
+  } catch (error) {
+    console.error('Failed to start:', error);
+    process.exit(1);
+  }
 })();
